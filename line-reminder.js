@@ -11,7 +11,7 @@
 //
 // 設定（必要なら変更）:
 const WARN_DAYS = 10;            // 在庫がこの日数未満なら警告対象
-const STATE_KEY = "feedInventory:shared:v2"; // app_state テーブルのキー
+const STATE_ID = "main";        // app_state テーブルの行ID（アプリと同じ）
 const APP_URL = "https://feedstock.vercel.app";
 
 // ── ユーティリティ ────────────────────────────────
@@ -133,15 +133,15 @@ async function main() {
   }
   const today = todayStr();
 
-  // Supabaseから app_state を取得
-  const url = `${SUPABASE_URL}/rest/v1/app_state?key=eq.${encodeURIComponent(STATE_KEY)}&select=value`;
+  // Supabaseから app_state を取得（id=main の data 列）
+  const url = `${SUPABASE_URL}/rest/v1/app_state?id=eq.${STATE_ID}&select=data`;
   const res = await fetch(url, {
     headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
   });
   if (!res.ok) { console.error("Supabase取得失敗:", res.status, await res.text()); process.exit(1); }
   const rows = await res.json();
   if (!rows.length) { console.error("app_stateが見つかりません。"); process.exit(1); }
-  const state = typeof rows[0].value === "string" ? JSON.parse(rows[0].value) : rows[0].value;
+  const state = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
 
   const farms = state.farms || [];
   const farmName = (id) => farms.find(f => f.id === id)?.name || id;

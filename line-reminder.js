@@ -10,7 +10,7 @@
 //   LINE_USER_ID        通知先のユーザーID（1対1。Uで始まる文字列）
 //
 // 設定（必要なら変更）:
-const WARN_DAYS = 50;            // 在庫がこの日数未満なら警告対象
+const WARN_DAYS = 10;            // 在庫がこの日数未満なら警告対象
 const STATE_ID = "main";        // app_state テーブルの行ID（アプリと同じ）
 const APP_URL = "https://feedstock.vercel.app";
 

@@ -5,7 +5,7 @@
 //
 // 必要な環境変数（GitHub Secrets で設定）:
 //   SUPABASE_URL        例: https://yqhhcgvopbevvttjlmee.supabase.co
-//   SUPABASE_KEY        Supabase anon キー
+//   SUPABASE_ANON_KEY        Supabase anon キー
 //   LINE_TOKEN          LINE Messaging API チャネルアクセストークン
 //   LINE_USER_ID        通知先のユーザーID（1対1。Uで始まる文字列）
 //
@@ -126,8 +126,8 @@ function analyzeShared(item, today) {
 
 // ── メイン ────────────────────────────────────────
 async function main() {
-  const { SUPABASE_URL, SUPABASE_KEY, LINE_TOKEN, LINE_USER_ID } = process.env;
-  if (!SUPABASE_URL || !SUPABASE_KEY || !LINE_TOKEN || !LINE_USER_ID) {
+  const { SUPABASE_URL, SUPABASE_ANON_KEY, LINE_TOKEN, LINE_USER_ID } = process.env;
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !LINE_TOKEN || !LINE_USER_ID) {
     console.error("環境変数が不足しています。");
     process.exit(1);
   }
@@ -136,7 +136,7 @@ async function main() {
   // Supabaseから app_state を取得
   const url = `${SUPABASE_URL}/rest/v1/app_state?key=eq.${encodeURIComponent(STATE_KEY)}&select=value`;
   const res = await fetch(url, {
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
   });
   if (!res.ok) { console.error("Supabase取得失敗:", res.status, await res.text()); process.exit(1); }
   const rows = await res.json();

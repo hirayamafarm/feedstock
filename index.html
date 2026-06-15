@@ -1594,17 +1594,17 @@ function CalendarView({items}){
     </>):(
       <div style={{...S.farmRow,marginTop:4}} className="no-print">{allScopeOpts.map(o=><button key={o.id} style={{...S.farmTab,...(allScope===o.id?S.farmActive:{})}} onClick={()=>setAllScope(o.id)}>{o.name}</button>)}</div>
     )}
-    <div style={S.calHead} className="cal-head"><button style={S.calNav} onClick={()=>shift(-1)} className="no-print">‹</button><span style={S.calTitle}>{Y}年{M}月 まきば在庫カレンダー</span><button style={S.calNav} onClick={()=>shift(1)} className="no-print">›</button></div>
+    {mode==="single"&&<div style={S.calHead} className="cal-head"><button style={S.calNav} onClick={()=>shift(-1)} className="no-print">‹</button><span style={S.calTitle}>{Y}年{M}月 まきば在庫カレンダー</span><button style={S.calNav} onClick={()=>shift(1)} className="no-print">›</button></div>}
+    {mode==="all"&&<div style={S.calHead} className="cal-head"><span style={S.calTitle}>まきば在庫カレンダー（今日起点）</span></div>}
     {mode==="single"
       ? <MonthGrid item={item} scope={scope} ymStr={month} large/>
       : <VerticalTable items={items} allScope={allScope} ymStr={month} shownItemIds={shownItemIds} onChangeShown={setShownItemIds}/>}
   </div>);
 }
 
-// 縦テーブル：行=日付、列=餌(×scope)
+// 縦テーブル：行=日付（今日起点・複数月連続）、列=餌(×scope)
 function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
-  const [Y,M]=ymStr.split("-").map(Number);
-  const dim=daysInMonth(Y,M);
+  const DAYS_AHEAD=90; // 今日から何日先まで表示するか
   // 表示対象の餌
   const allItemIds=items.map(i=>i.id);
   const shown=shownItemIds===null?allItemIds:shownItemIds;
@@ -1614,7 +1614,6 @@ function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
     if(!shown.includes(it.id)) continue;
     const sm=stockModeOf(it);
     if(sm==="shared"){
-      // 共通在庫は合計1列で表示（scopeはall、simulateMonth内で合算される）
       cols.push({item:it, scope:"all", label:it.name, sub:"共通"});
     } else if(allScope==="all") cols.push({item:it, scope:"all", label:it.name, sub:""});
     else if(allScope==="both"){
@@ -1623,27 +1622,35 @@ function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
       if(it.farms.includes(allScope)) cols.push({item:it, scope:allScope, label:it.name, sub:""});
     }
   }
-  const colSims=cols.map(c=>({...c, sim:simulateMonth(c.item, c.scope, ymStr)}));
-  const days=Array.from({length:dim},(_,i)=>i+1);
   const todayStr=today();
+  // 今日から DAYS_AHEAD 日分の日付配列を作る（月をまたいで連続）
+  const dateList=[];
+  { const base=new Date(todayStr+"T00:00:00");
+    for(let i=0;i<DAYS_AHEAD;i++){ const d=new Date(base); d.setDate(d.getDate()+i);
+      dateList.push({ y:d.getFullYear(), m:d.getMonth()+1, d:d.getDate(), dow:d.getDay(), iso:d.toISOString().slice(0,10) }); } }
+  // 各列について、表示範囲にかかる月のシミュレーションをまとめて持つ（月ごとにsimulateMonth）
+  const monthsNeeded=[...new Set(dateList.map(x=>`${x.y}-${String(x.m).padStart(2,"0")}`))];
+  const colSims=cols.map(c=>{
+    const sims={}; for(const ym of monthsNeeded){ sims[ym]=simulateMonth(c.item, c.scope, ym); }
+    return {...c, sims};
+  });
   const toggleShown=(id)=>{ const cur=shown.includes(id)?shown.filter(x=>x!==id):[...shown,id]; onChangeShown(cur.length===items.length?null:cur); };
-
-  // 印刷/PDF
   const onPrint=()=>{ window.print(); };
 
-  // 各セル描画ヘルパー（トレンド↑↓も）
-  const renderCell=(c,d,date,dow)=>{
-    if(!c.sim) return <td key={c.item.id+"-"+c.scope} style={S.vtCell}>—</td>;
-    const cell=c.sim.cells[d-1];
+  // セル描画（日付オブジェクトから該当月simの該当日セルを引く）
+  const renderCell=(c,dobj)=>{
+    const ym=`${dobj.y}-${String(dobj.m).padStart(2,"0")}`;
+    const sim=c.sims[ym];
+    if(!sim) return <td key={c.item.id+"-"+c.scope} style={S.vtCell}>—</td>;
+    const cell=sim.cells[dobj.d-1];
     if(!cell) return <td key={c.item.id+"-"+c.scope} style={S.vtCell}></td>;
-    const prev=d>1?c.sim.cells[d-2]:null;
-    const warn=c.sim.dailyUse*7;
+    const prev=dobj.d>1?sim.cells[dobj.d-2]:null;
+    const warn=sim.dailyUse*7;
     let col="var(--ink)", bg="transparent", w=400;
     if(cell.before){ col="var(--muted)"; }
     else if(cell.kg<=0){ col="var(--bad)"; bg="rgba(168,73,47,.16)"; w=700; }
     else if(cell.kg<=warn){ col="var(--warn)"; bg="rgba(201,143,42,.13)"; w=700; }
     else if(cell.anchor){ bg="rgba(95,125,60,.16)"; w=700; }
-    // トレンド: 前日比
     let trend=null;
     if(!cell.before&&prev&&!prev.before&&prev.kg!=null){
       const diff=cell.kg-prev.kg;
@@ -1678,13 +1685,15 @@ function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
         {items.map(it=>(<button key={it.id} style={{...S.itemFilterBtn,...(shown.includes(it.id)?S.itemFilterOn:{})}} onClick={()=>toggleShown(it.id)}>{it.name}</button>))}
       </div>
     </div>
+    <div style={S.vtTodayNote} className="no-print">📅 今日（{todayStr.slice(5).replace("-","/")}）から{DAYS_AHEAD}日先まで・月またぎ連続表示</div>
     {colSims.length===0?<div style={S.empty}>表示する餌を選んでください。</div>:(
       <div style={S.vtWrap} className="vt-wrap">
         <table style={S.vtTable}>
           <thead>
             <tr>
               <th style={S.vtDateHead}>日付</th>
-              {colSims.map((c,i)=>{ const u=unitOf(c.item); const monthly=c.sim?Math.round(c.sim.dailyUse*30):null;
+              {colSims.map((c,i)=>{ const u=unitOf(c.item);
+                const firstSim=c.sims[monthsNeeded[0]]; const monthly=firstSim?Math.round(firstSim.dailyUse*30):null;
                 return (<th key={i} style={S.vtColHead}>
                   <div style={S.vtColName}>{c.label}</div>
                   {c.sub&&<div style={S.vtColSub}>{c.sub}</div>}
@@ -1693,20 +1702,22 @@ function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
             </tr>
           </thead>
           <tbody>
-            {days.map(d=>{
-              const date=iso(Y,M,d);
-              const dt=new Date(Y,M-1,d);
-              const dow=dt.getDay();
-              const isToday=date===todayStr;
-              // 土日の薄色（行全体）
-              const rowBg=dow===0?"rgba(168,73,47,.05)":dow===6?"rgba(58,110,165,.05)":"#fff";
-              // 日付セルの濃色（土日も識別しやすく）
-              const dateBg=dow===0?"rgba(168,73,47,.13)":dow===6?"rgba(58,110,165,.13)":"#fbf8ef";
-              const dateCol=dow===0?"var(--bad)":dow===6?"#3a6ea5":"var(--ink)";
-              return (<tr key={d} style={{background:rowBg}}>
-                <td style={{...S.vtDate,background:dateBg,color:dateCol,fontWeight:isToday?900:700,boxShadow:isToday?"inset 0 0 0 2px var(--accent)":"none"}}>{d}</td>
-                {colSims.map(c=>renderCell(c,d,date,dow))}
-              </tr>);
+            {dateList.map((dobj,idx)=>{
+              const isToday=dobj.iso===todayStr;
+              const isMonthStart=dobj.d===1||idx===0; // 月初 or 先頭
+              const rowBg=dobj.dow===0?"rgba(168,73,47,.05)":dobj.dow===6?"rgba(58,110,165,.05)":"#fff";
+              const dateBg=dobj.dow===0?"rgba(168,73,47,.13)":dobj.dow===6?"rgba(58,110,165,.13)":"#fbf8ef";
+              const dateCol=dobj.dow===0?"var(--bad)":dobj.dow===6?"#3a6ea5":"var(--ink)";
+              // 月の変わり目には区切り行を入れる
+              return (<React.Fragment key={dobj.iso}>
+                {isMonthStart&&idx!==0&&(<tr><td colSpan={colSims.length+1} style={S.vtMonthDivider}>{dobj.y}年{dobj.m}月</td></tr>)}
+                <tr style={{background:isToday?"rgba(95,125,60,.08)":rowBg}}>
+                  <td style={{...S.vtDate,background:isToday?"rgba(95,125,60,.2)":dateBg,color:dateCol,fontWeight:isToday?900:700,boxShadow:isToday?"inset 0 0 0 2px var(--accent)":"none"}}>
+                    {isMonthStart?`${dobj.m}/${dobj.d}`:dobj.d}{isToday&&<span style={S.vtTodayTag}>今日</span>}
+                  </td>
+                  {colSims.map(c=>renderCell(c,dobj))}
+                </tr>
+              </React.Fragment>);
             })}
           </tbody>
         </table>
@@ -2443,6 +2454,9 @@ const S={
   vtColUsage:{color:"var(--muted)",fontWeight:600,fontSize:9},
   filterClearBtn:{background:"#fff",color:"var(--muted)",border:"1px solid var(--line)",borderRadius:9,padding:"5px 11px",fontSize:11.5,fontWeight:700,cursor:"pointer"},
   vtDate:{position:"sticky",left:0,zIndex:2,borderRight:"2px solid var(--line)",borderBottom:"1px solid var(--line)",padding:"8px 10px",fontSize:14,textAlign:"center",minWidth:56},
+  vtTodayNote:{fontSize:12.5,color:"var(--accent)",fontWeight:700,margin:"4px 0 8px",textAlign:"center"},
+  vtMonthDivider:{background:"var(--accent)",color:"#fff",fontWeight:800,fontSize:13,padding:"6px 12px",textAlign:"left",position:"sticky",left:0},
+  vtTodayTag:{display:"inline-block",fontSize:9,fontWeight:800,color:"#fff",background:"var(--accent)",borderRadius:6,padding:"1px 5px",marginLeft:4,verticalAlign:"middle"},
   vtCell:{borderRight:"1px solid var(--line)",borderBottom:"1px solid var(--line)",padding:"6px 10px",fontSize:13,textAlign:"right",whiteSpace:"nowrap"},
   vtCellMain:{whiteSpace:"nowrap"},
   vtArrival:{display:"block",fontSize:10,color:"var(--accent)",fontWeight:700,marginTop:1,lineHeight:1},

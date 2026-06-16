@@ -1828,6 +1828,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
   const [sheetFarmOverride,setSheetFarmOverride]=useState(null); // null=自動、{sheetName:farmId} or skip
   const [showDebug,setShowDebug]=useState(false);
   const [selectedTargets,setSelectedTargets]=useState({}); // key="farm|feedname" -> itemId(target) or "new"
+  const [usageWarnings,setUsageWarnings]=useState([]); // 月間使用量が1割以上変動した餌
 
   const onFile=async(e)=>{ const f=e.target.files?.[0]; if(!f) return; try{
     const buf=await f.arrayBuffer();
@@ -2010,6 +2011,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
       }
     }
     // 既存への反映
+    const warns=[];
     for(const [fid,feeds] of Object.entries(hirayamaResults)){
       for(const [feedName,info] of Object.entries(feeds)){
         const t=selectedTargets[`${fid}|${feedName}`];
@@ -2017,13 +2019,33 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
           const dailyKg=useRecent?info.dailyKgRecent:info.dailyKgAll;
           const days=useRecent?info.recentDays:info.days;
           const from=useRecent?info.recentFrom:info.from;
+          // 変動チェック: 既存のfeedDailyと比べて月間使用量が1割以上変わったら警告
+          const targetItem=items.find(i=>i.id===t);
+          const prevFd=targetItem?.feedDaily?.[fid];
+          if(prevFd&&prevFd.dailyKg>0&&dailyKg>0){
+            const prevMonthly=prevFd.dailyKg*30, newMonthly=dailyKg*30;
+            const change=(newMonthly-prevMonthly)/prevMonthly;
+            if(Math.abs(change)>=0.10){
+              warns.push({ name:feedName, farm:FARMS.find(f=>f.id===fid)?.name||fid,
+                prevMonthly:Math.round(prevMonthly), newMonthly:Math.round(newMonthly),
+                pct:Math.round(change*100), up:change>0, unit:unitOf(targetItem) });
+            }
+          }
           onApply(t,fid,{dailyKg, from, to:info.to, days, total:useRecent?info.recentTotal:info.total, rows:info.rows});
           n++;
         }
       }
     }
+    setUsageWarnings(warns);
     if(added>0) setMsg(`新規餌${added}件を登録しました。もう一度「すべて反映」を押すと、その分も消費量に反映されます（${n}件を反映済み）。`);
-    else { setMsg(`${n}件の消費量を反映しました。`); cancelImport(); }
+    else {
+      // 取込状態をクリア（msgとwarningsは残す）
+      setSheets(null); setSheetName("");
+      setHirayamaResults(null); setHirayamaDebug(null);
+      setSheetFarmOverride(null); setShowDebug(false);
+      setSelectedTargets({});
+      setMsg(warns.length>0 ? `${n}件の消費量を反映しました。⚠️ ${warns.length}件で月間使用量が1割以上変動しています（下に詳細）。` : `${n}件の消費量を反映しました。`);
+    }
   };
 
   // 汎用モードの計算
@@ -2063,6 +2085,17 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
       {sheets&&<button style={S.cancelBtn} onClick={cancelImport}>✕ 取込をキャンセル</button>}
     </div>
     {msg&&<div style={{...S.miniNote,color:msg.includes("失敗")?"var(--bad)":"var(--ok)"}}>{msg}</div>}
+    {usageWarnings.length>0&&(<div style={S.usageWarnBox}>
+      <div style={S.usageWarnTitle}>⚠️ 月間使用量が前回から1割以上変動しています</div>
+      <div style={S.usageWarnNote}>取り込みミスや異常がないか確認してください。問題なければそのままでOKです。</div>
+      {usageWarnings.map((w,i)=>(<div key={i} style={S.usageWarnRow}>
+        <span style={S.usageWarnName}>{w.name}<span style={S.usageWarnFarm}>{w.farm}</span></span>
+        <span style={{color:w.up?"var(--bad)":"#3a6ea5",fontWeight:700}}>
+          {fmt(w.prevMonthly)} → {fmt(w.newMonthly)}{w.unit}/月（{w.up?"+":""}{w.pct}%）
+        </span>
+      </div>))}
+      <button style={{...S.cancelBtn,marginTop:8}} onClick={()=>setUsageWarnings([])}>確認した（閉じる）</button>
+    </div>)}
 
     {/* 手動マッピング: シート→農場の対応をユーザーが変更可能に */}
     {importMode==="hirayama"&&sheets&&hirayamaDebug&&(<div style={S.importBox}>
@@ -2457,6 +2490,12 @@ const S={
   vtTodayNote:{fontSize:12.5,color:"var(--accent)",fontWeight:700,margin:"4px 0 8px",textAlign:"center"},
   vtMonthDivider:{background:"var(--accent)",color:"#fff",fontWeight:800,fontSize:13,padding:"6px 12px",textAlign:"left",position:"sticky",left:0},
   vtTodayTag:{display:"inline-block",fontSize:9,fontWeight:800,color:"#fff",background:"var(--accent)",borderRadius:6,padding:"1px 5px",marginLeft:4,verticalAlign:"middle"},
+  usageWarnBox:{background:"#fff8ec",border:"1px solid #e8c98a",borderRadius:12,padding:"12px 14px",margin:"10px 0"},
+  usageWarnTitle:{fontSize:14,fontWeight:800,color:"var(--warn)",marginBottom:4},
+  usageWarnNote:{fontSize:12,color:"var(--muted)",marginBottom:10,lineHeight:1.5},
+  usageWarnRow:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,padding:"6px 0",borderTop:"1px solid #f0e3c4",fontSize:13,flexWrap:"wrap"},
+  usageWarnName:{fontWeight:700},
+  usageWarnFarm:{display:"inline-block",fontSize:11,fontWeight:700,color:"var(--muted)",background:"#f0e9d3",borderRadius:8,padding:"1px 7px",marginLeft:6},
   vtCell:{borderRight:"1px solid var(--line)",borderBottom:"1px solid var(--line)",padding:"6px 10px",fontSize:13,textAlign:"right",whiteSpace:"nowrap"},
   vtCellMain:{whiteSpace:"nowrap"},
   vtArrival:{display:"block",fontSize:10,color:"var(--accent)",fontWeight:700,marginTop:1,lineHeight:1},

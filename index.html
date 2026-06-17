@@ -19,7 +19,7 @@
 <!-- ▲▲▲ 書き換えるのはこの2行だけ ▲▲▲ -->
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
 <style>
@@ -59,7 +59,7 @@
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-src" data-presets="react">
 const { useState, useEffect, useRef } = React;
 
 // ── Supabase 接続 ───────────────────────────────
@@ -2520,6 +2520,26 @@ const S={
 };
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+<script>
+(function(){
+  function runApp(){
+    try{
+      var src = document.getElementById("app-src").textContent;
+      var out = Babel.transform(src, { presets: ["react"] }).code;
+      (0, eval)(out);
+    }catch(e){
+      var r = document.getElementById("root");
+      if(r) r.innerHTML = '<div style="padding:24px;font-family:sans-serif;color:#a8492f;line-height:1.7">アプリの起動に失敗しました。<br>少し時間をおいて再読み込みしてください。<br><br><small style="color:#8a8475">'+(e&&e.message?e.message:e)+'</small></div>';
+      console.error("App init error:", e);
+    }
+  }
+  if(window.Babel){ runApp(); }
+  else{
+    var iv=setInterval(function(){ if(window.Babel){ clearInterval(iv); runApp(); } },50);
+    setTimeout(function(){ clearInterval(iv); },12000);
+  }
+})();
 </script>
 <script>
 // Service Worker登録（PWA化）

@@ -124,7 +124,7 @@ function parseBackupFile(file){
 // ── ユーティリティ ──────────────────────────────
 const fmt = (n) => n == null || isNaN(n) ? "—" : Number(n).toLocaleString("ja-JP", { maximumFractionDigits: 1 });
 const ym = (d) => d.slice(0, 7);
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
 const thisMonth = () => today().slice(0, 7);
 const daysInMonth = (y, m) => new Date(y, m, 0).getDate();
 const iso = (y, m, d) => `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
@@ -254,6 +254,15 @@ function stockScopesOf(item){ return item.farms||[]; }
 // 発注の対象農場(古いordersはshared互換)
 function orderForFarm(o){ return o.forFarm||"shared"; }
 
+// 農場の在庫の土台。棚卸しが無ければ、その農場宛ての受領済み入荷(入荷予定日が今日以前)の最古を初期在庫とする。
+function farmBase(item,fid){
+  const fs=farmStats(item,fid);
+  if(fs.lastDate!=null) return { date:fs.lastDate, kg:fs.lastKg||0, fromDelivery:false };
+  const t=today();
+  const recv=(item.orders||[]).filter(o=>orderForFarm(o)===fid&&o.received&&o.etaDate<=t).sort((a,b)=>a.etaDate.localeCompare(b.etaDate));
+  if(recv.length===0) return { date:null, kg:0, fromDelivery:false };
+  return { date:recv[0].etaDate, kg:recv[0].kg, fromDelivery:true };
+}
 function analyze(item){
   let totalStock=0,totalUsage=0,hasUsage=false,hasExcel=false;
   const scopes=stockScopesOf(item);
@@ -262,14 +271,15 @@ function analyze(item){
   for(const fid of scopes){
     const fs=farmStats(item,fid);
     if(fs.usage!=null){ totalUsage+=fs.usage; hasUsage=true; if(fs.source==="excel") hasExcel=true; }
-    if(fs.lastKg==null) continue;
+    const base=farmBase(item,fid);
+    if(base.date==null) continue;
     // 棚卸し日以降〜今日 までに「入荷予定日が到来している」発注を加算
     // (入荷済/未入荷の区別なく、入荷予定日が今日以前なら物理的に届いた前提)
     let receivedSince=0;
-    if(fs.lastDate){
+    if(base.date){
       for(const o of orders){
-        // 入荷予定日が棚卸し日より後〜今日以前
-        if(o.etaDate<=fs.lastDate||o.etaDate>todayStr) continue;
+        // 入荷予定日が土台日より後〜今日以前
+        if(o.etaDate<=base.date||o.etaDate>todayStr) continue;
         const ff=orderForFarm(o);
         if(stockModeOf(item)==="shared"){ receivedSince+=o.kg/scopes.length; }
         else if(ff===fid){ receivedSince+=o.kg; }
@@ -282,11 +292,11 @@ function analyze(item){
     }
     // 棚卸し日から今日までの消費見込み
     let consumedSince=0;
-    if(fs.lastDate&&fs.usage!=null){
-      const days=Math.max(0, Math.round((new Date(todayStr)-new Date(fs.lastDate))/86400000));
+    if(fs.usage!=null){
+      const days=Math.max(0, Math.round((new Date(todayStr)-new Date(base.date))/86400000));
       consumedSince=(fs.usage/30)*days;
     }
-    totalStock+=Math.max(0, fs.lastKg+receivedSince-consumedSince);
+    totalStock+=Math.max(0, base.kg+receivedSince-consumedSince);
   }
   // 発注残は「入荷予定日が今日より未来」のもののみ(未入荷/入荷済問わず、未来分は加算待ち)
   const pendingKg=orders.filter(o=>o.etaDate>todayStr&&!o.received).reduce((s,o)=>s+o.kg,0);
@@ -305,11 +315,12 @@ function analyzeByFarm(item){
   const todayStr=today();
   for(const fid of item.farms){
     const fs=farmStats(item,fid);
-    // 棚卸し日以降〜今日に「入荷予定日が到来した」発注をこの農場分として加算（入荷済問わず）
+    const base=farmBase(item,fid);
+    // 土台(棚卸し or 入荷で確立)以降〜今日に到来した発注をこの農場分として加算
     let receivedSince=0;
-    if(fs.lastDate){
+    if(base.date){
       for(const o of orders){
-        if(o.etaDate<=fs.lastDate||o.etaDate>todayStr) continue;
+        if(o.etaDate<=base.date||o.etaDate>todayStr) continue;
         const ff=orderForFarm(o);
         if(ff===fid){ receivedSince+=o.kg; }
         else if(ff==="shared"){
@@ -321,11 +332,11 @@ function analyzeByFarm(item){
     }
     // 消費見込み
     let consumedSince=0;
-    if(fs.lastDate&&fs.usage!=null){
-      const days=Math.max(0, Math.round((new Date(todayStr)-new Date(fs.lastDate))/86400000));
+    if(base.date&&fs.usage!=null){
+      const days=Math.max(0, Math.round((new Date(todayStr)-new Date(base.date))/86400000));
       consumedSince=(fs.usage/30)*days;
     }
-    const stock=Math.max(0, (fs.lastKg||0)+receivedSince-consumedSince);
+    const stock=base.date!=null?Math.max(0, base.kg+receivedSince-consumedSince):0;
 
     // 発注残 = 入荷予定日が今日より未来の発注のみ（未入荷/入荷済の区別はしない、未来分はpendingに含める）
     const pending=orders.filter(o=>o.etaDate>todayStr&&!o.received&&(orderForFarm(o)===fid||orderForFarm(o)==="shared")).reduce((s,o)=>{
@@ -346,18 +357,32 @@ function analyzeByFarm(item){
 function simulateMonth(item, scope, ymStr){
   const [Y,M]=ymStr.split("-").map(Number); const dim=daysInMonth(Y,M);
   const mode=stockModeOf(item);
+  // 農場別の合計は「各農場を別々に計算して合算」(共通モードは下の1タンク計算のまま)
+  if(scope==="all"&&mode!=="shared"){
+    const sims=item.farms.map(fid=>simulateMonth(item,fid,ymStr)).filter(Boolean);
+    if(!sims.length) return null;
+    let du=0; for(const s of sims) du+=s.dailyUse;
+    let sd=null; for(const s of sims){ if(s.startDate&&(!sd||s.startDate<sd)) sd=s.startDate; }
+    const mc=[];
+    for(let i=0;i<dim;i++){ let sum=0,act=false,anc=false,info=null;
+      for(const s of sims){ const cc=s.cells[i]; if(!cc) continue;
+        if(cc.info){ if(!info) info={kg:0,anyPending:false,anyReceived:false}; info.kg+=cc.info.kg; if(cc.info.anyReceived)info.anyReceived=true; if(cc.info.anyPending)info.anyPending=true; }
+        if(cc.anchor) anc=true; if(!cc.before&&cc.kg!=null){ sum+=cc.kg; act=true; } }
+      mc.push(act?{day:i+1,date:iso(Y,M,i+1),kg:sum,info,anchor:anc}:{day:i+1,date:iso(Y,M,i+1),kg:null,before:true,info}); }
+    return { cells:mc,dailyUse:du,startDate:sd,dim,Y,M };
+  }
   let startDate,startKg,dailyUse; const orders=item.orders||[];
   // 共通モードは scopeに関わらず合計を使う
   const effScope=mode==="shared"?"all":scope;
   if(effScope==="all"){
     let total=0,usageSum=0,latest=null,ok=false;
-    for(const fid of item.farms){ const fs=farmStats(item,fid);
-      if(fs.lastKg!=null) total+=fs.lastKg;
-      if(fs.lastDate&&(!latest||fs.lastDate>latest)) latest=fs.lastDate;
+    for(const fid of item.farms){ const fs=farmStats(item,fid); const b=farmBase(item,fid);
+      if(b.date!=null) total+=b.kg;
+      if(b.date&&(!latest||b.date>latest)) latest=b.date;
       if(fs.usage!=null){ usageSum+=fs.usage; ok=true; } }
     startDate=latest; startKg=total; dailyUse=ok?usageSum/30:0;
   } else {
-    const fs=farmStats(item,effScope); startDate=fs.lastDate; startKg=fs.lastKg||0; dailyUse=(fs.usage||0)/30;
+    const b=farmBase(item,effScope); startDate=b.date; startKg=b.kg; dailyUse=(farmStats(item,effScope).usage||0)/30;
   }
   if(!startDate) return null;
   // 入荷の按分（農場別モードで、ある農場だけを見る場合）
@@ -1627,7 +1652,7 @@ function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
   const dateList=[];
   { const base=new Date(todayStr+"T00:00:00");
     for(let i=0;i<DAYS_AHEAD;i++){ const d=new Date(base); d.setDate(d.getDate()+i);
-      dateList.push({ y:d.getFullYear(), m:d.getMonth()+1, d:d.getDate(), dow:d.getDay(), iso:d.toISOString().slice(0,10) }); } }
+      dateList.push({ y:d.getFullYear(), m:d.getMonth()+1, d:d.getDate(), dow:d.getDay(), iso:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}` }); } }
   // 各列について、表示範囲にかかる月のシミュレーションをまとめて持つ（月ごとにsimulateMonth）
   const monthsNeeded=[...new Set(dateList.map(x=>`${x.y}-${String(x.m).padStart(2,"0")}`))];
   const colSims=cols.map(c=>{

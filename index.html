@@ -476,6 +476,21 @@ function canEdit(role, desc){
   return false; // viewer
 }
 
+// ── 下タブ用ラインアイコン（LINE風アウトライン） ──────────
+function NavIcon({name,size=27}){
+  const p={width:size,height:size,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:1.8,strokeLinecap:"round",strokeLinejoin:"round"};
+  const shapes={
+    order:<g><path d="M6 8h12l-1 12H7L6 8z"/><path d="M9 8a3 3 0 0 1 6 0"/></g>,
+    inventory:<g><rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M8.5 11h7M8.5 15h7"/></g>,
+    calendar:<g><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M4 9.5h16M8 3v4M16 3v4"/></g>,
+    more:<path d="M4 7h16M4 12h16M4 17h16"/>,
+    diff:<path d="M3 20h18M6 20V11M12 20V5M18 20v-6"/>,
+    data:<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>,
+    settings:<g><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></g>,
+  };
+  return <svg {...p}>{shapes[name]}</svg>;
+}
+
 // ── メイン ──────────────────────────────────────
 function App(){
   const [state,setState]=useState(null);
@@ -680,20 +695,20 @@ function App(){
       </main>
       {(view==="order"||view==="inventory"||view==="calendar"||view==="diff"||view==="data"||view==="settings")&&(
         <nav style={S.bottomNav} className="no-print">
-          {[{id:"order",icon:"🛒",label:"発注"},{id:"inventory",icon:"📋",label:"棚卸し"},{id:"calendar",icon:"📅",label:"カレンダー"}].map(t=>(
+          {[{id:"order",icon:"order",label:"発注"},{id:"inventory",icon:"inventory",label:"棚卸し"},{id:"calendar",icon:"calendar",label:"カレンダー"}].map(t=>(
             <button key={t.id} style={{...S.bnItem,...(view===t.id?S.bnActive:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
-              <span style={S.bnIcon}>{t.icon}</span><span style={S.bnLabel}>{t.label}</span>
+              <span style={S.bnIcon}><NavIcon name={t.icon}/></span><span style={S.bnLabel}>{t.label}</span>
             </button>
           ))}
           <button style={{...S.bnItem,...((["diff","data","settings"].includes(view)||moreOpen)?S.bnActive:{})}} onClick={()=>setMoreOpen(o=>!o)}>
-            <span style={S.bnIcon}>☰</span><span style={S.bnLabel}>その他</span>
+            <span style={S.bnIcon}><NavIcon name="more"/></span><span style={S.bnLabel}>その他</span>
           </button>
           {moreOpen&&(<>
             <div style={S.menuOverlay} onClick={()=>setMoreOpen(false)}/>
             <div style={S.bnMore}>
-              {[{id:"diff",icon:"📊",label:"差分"},{id:"data",icon:"📥",label:"取込/履歴"},{id:"settings",icon:"⚙️",label:"設定"}].map(t=>(
+              {[{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
                 <button key={t.id} style={{...S.bnMoreItem,...(view===t.id?{color:"var(--accent)"}:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
-                  <span style={{fontSize:18}}>{t.icon}</span> {t.label}
+                  <NavIcon name={t.icon} size={20}/> {t.label}
                 </button>
               ))}
             </div>
@@ -2422,7 +2437,7 @@ const S={
   bottomNav:{position:"fixed",left:0,right:0,bottom:0,zIndex:60,display:"flex",background:"var(--card)",borderTop:"1px solid var(--line)",boxShadow:"0 -2px 12px rgba(80,70,40,.08)",paddingBottom:"env(safe-area-inset-bottom)"},
   bnItem:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,padding:"9px 4px 9px",border:"none",background:"transparent",color:"var(--muted)",fontWeight:600,cursor:"pointer"},
   bnActive:{color:"var(--accent)"},
-  bnIcon:{fontSize:27,lineHeight:1},
+  bnIcon:{display:"flex",alignItems:"center",justifyContent:"center",height:27},
   bnLabel:{fontSize:11,whiteSpace:"nowrap"},
   bnMore:{position:"absolute",bottom:"100%",right:8,marginBottom:8,zIndex:80,background:"#fff",border:"1px solid var(--line)",borderRadius:12,boxShadow:"0 6px 24px rgba(80,70,40,.22)",padding:6,minWidth:168},
   bnMoreItem:{display:"flex",alignItems:"center",gap:10,width:"100%",textAlign:"left",padding:"11px 14px",border:"none",background:"transparent",fontSize:15,fontWeight:700,color:"var(--ink)",borderRadius:8,cursor:"pointer"},

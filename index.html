@@ -481,6 +481,7 @@ function App(){
   const [state,setState]=useState(null);
   const [view,setView]=useState("order");
   const [prevView,setPrevView]=useState("order"); // detail に来る前の画面
+  const [moreOpen,setMoreOpen]=useState(false); // 下タブの「その他」メニュー
   const [selId,setSelId]=useState(null);
   const [sync,setSync]=useState("loading");
   const [log,setLog]=useState([]);
@@ -663,14 +664,6 @@ function App(){
       </header>
       <main style={S.main}>
         {(view==="order"||view==="inventory"||view==="calendar"||view==="diff"||view==="data"||view==="settings") && (<>
-          <div style={S.tabBar} className="no-print">
-            <button style={{...S.navTab,...(view==="order"?S.navActive:{})}} onClick={()=>setView("order")}>発注</button>
-            <button style={{...S.navTab,...(view==="inventory"?S.navActive:{})}} onClick={()=>setView("inventory")}>棚卸し</button>
-            <button style={{...S.navTab,...(view==="calendar"?S.navActive:{})}} onClick={()=>setView("calendar")}>カレンダー</button>
-            <button style={{...S.navTab,...(view==="diff"?S.navActive:{})}} onClick={()=>setView("diff")}>差分</button>
-            <button style={{...S.navTab,...(view==="data"?S.navActive:{})}} onClick={()=>setView("data")}>取込/履歴</button>
-            <button style={{...S.navTab,...(view==="settings"?S.navActive:{})}} onClick={()=>setView("settings")}>設定</button>
-          </div>
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items}/>}
@@ -685,6 +678,28 @@ function App(){
         {view==="edit"&&sel&&<EditView item={sel} onSave={(patch)=>{editItem(sel.id,patch);setView("detail");}} onCancel={()=>setView("detail")}/>}
         {view==="add"&&<AddView onSave={it=>{addItem(it);setView("inventory");}} onCancel={()=>setView("inventory")}/>}
       </main>
+      {(view==="order"||view==="inventory"||view==="calendar"||view==="diff"||view==="data"||view==="settings")&&(
+        <nav style={S.bottomNav} className="no-print">
+          {[{id:"order",icon:"🛒",label:"発注"},{id:"inventory",icon:"📋",label:"棚卸し"},{id:"calendar",icon:"📅",label:"カレンダー"}].map(t=>(
+            <button key={t.id} style={{...S.bnItem,...(view===t.id?S.bnActive:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
+              <span style={S.bnIcon}>{t.icon}</span><span style={S.bnLabel}>{t.label}</span>
+            </button>
+          ))}
+          <button style={{...S.bnItem,...((["diff","data","settings"].includes(view)||moreOpen)?S.bnActive:{})}} onClick={()=>setMoreOpen(o=>!o)}>
+            <span style={S.bnIcon}>☰</span><span style={S.bnLabel}>その他</span>
+          </button>
+          {moreOpen&&(<>
+            <div style={S.menuOverlay} onClick={()=>setMoreOpen(false)}/>
+            <div style={S.bnMore}>
+              {[{id:"diff",icon:"📊",label:"差分"},{id:"data",icon:"📥",label:"取込/履歴"},{id:"settings",icon:"⚙️",label:"設定"}].map(t=>(
+                <button key={t.id} style={{...S.bnMoreItem,...(view===t.id?{color:"var(--accent)"}:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
+                  <span style={{fontSize:18}}>{t.icon}</span> {t.label}
+                </button>
+              ))}
+            </div>
+          </>)}
+        </nav>
+      )}
     </div>
   );
 }
@@ -1100,6 +1115,7 @@ function PendingOrdersView({items, onToggleReceived, onDelOrder, onEditOrder, on
   const [subTab,setSubTab]=useState("list"); // list | byItem
   const [farmFilter,setFarmFilter]=useState("all"); // all | shared | <farmId>
   const [editingId,setEditingId]=useState(null);
+  const [menuId,setMenuId]=useState(null); // ⋯メニューを開いている発注ID
   const all=[];
   for(const it of items){
     for(const o of (it.orders||[])){
@@ -1133,10 +1149,18 @@ function PendingOrdersView({items, onToggleReceived, onDelOrder, onEditOrder, on
           </div>
         </div>
         <div style={S.pendingActions}>
-          <button style={S.copyMini} title="場所：餌名をコピー" onClick={async()=>{ const t=orderShortLabel(o); const ok=await copyToClipboard(t); if(ok) alert(`コピー: ${t}`); }}>📋</button>
-          <button style={S.copyMini} title="編集" onClick={()=>setEditingId(isEditing?null:o.id)}>{isEditing?"閉":"✎"}</button>
-          <button style={S.receivedBtn} onClick={()=>onToggleReceived(o.item.id,o.id)} title="入荷済みにする">✓</button>
-          <button style={S.miniDel} onClick={()=>{ if(confirm(`「${orderShortLabel(o)}」を削除しますか?`)) onDelOrder(o.item.id,o.id); }}>×</button>
+          <button style={S.receivedBtnWide} onClick={()=>onToggleReceived(o.item.id,o.id)} title="入荷済みにする">✓ 入荷</button>
+          <div style={{position:"relative",flexShrink:0}}>
+            <button style={S.moreBtn} title="その他の操作" onClick={()=>setMenuId(menuId===o.id?null:o.id)}>⋯</button>
+            {menuId===o.id&&(<>
+              <div style={S.menuOverlay} onClick={()=>setMenuId(null)}/>
+              <div style={S.menuPop}>
+                <button style={S.menuItem} onClick={async()=>{ setMenuId(null); const t=orderShortLabel(o); const ok=await copyToClipboard(t); if(ok) alert(`コピー: ${t}`); }}>📋 コピー</button>
+                <button style={S.menuItem} onClick={()=>{ setMenuId(null); setEditingId(isEditing?null:o.id); }}>✎ 編集</button>
+                <button style={{...S.menuItem,color:"var(--bad)"}} onClick={()=>{ setMenuId(null); if(confirm(`「${orderShortLabel(o)}」を削除しますか?`)) onDelOrder(o.item.id,o.id); }}>× 削除</button>
+              </div>
+            </>)}
+          </div>
         </div>
       </div>
       {isEditing&&<EditOrderForm order={o} onSave={(patch)=>{ onEditOrder(o.item.id,o.id,patch); setEditingId(null); }} onCancel={()=>setEditingId(null)}/>}
@@ -2319,7 +2343,7 @@ const S={
   diffDelta:{fontWeight:700,fontSize:14,marginLeft:"auto"},
   logo:{fontFamily:"'Zen Maru Gothic',sans-serif",fontWeight:900,fontSize:15,whiteSpace:"nowrap"},
   headerStatus:{display:"flex",gap:10,flexWrap:"wrap",marginTop:3,fontSize:10.5,color:"#f4efe2",opacity:0.85,lineHeight:1.2},
-  main:{maxWidth:900,margin:"0 auto",padding:"16px 18px 60px"},
+  main:{maxWidth:900,margin:"0 auto",padding:"16px 18px 88px"},
   fade:{animation:"fadeUp .35s ease"},
   tabBar:{display:"flex",gap:6,background:"var(--card)",border:"1px solid var(--line)",borderRadius:12,padding:4,marginBottom:14,overflowX:"auto",flexWrap:"wrap"},
   navTab:{flex:"1 1 auto",padding:"9px 8px",border:"none",background:"transparent",borderRadius:9,fontWeight:700,fontSize:13,color:"var(--muted)",minWidth:60,whiteSpace:"nowrap"},
@@ -2390,6 +2414,18 @@ const S={
   pendingKg:{fontSize:13.5,fontWeight:800,color:"var(--ink)"},
   pendingActions:{display:"flex",alignItems:"center",gap:6,flexShrink:0},
   receivedBtn:{width:28,height:28,padding:0,border:"1px solid var(--ok)",borderRadius:6,background:"#fff",color:"var(--ok)",fontSize:14,fontWeight:700,cursor:"pointer"},
+  receivedBtnWide:{padding:"8px 14px",border:"none",borderRadius:8,background:"var(--ok)",color:"#fff",fontSize:13,fontWeight:700,whiteSpace:"nowrap",cursor:"pointer"},
+  moreBtn:{width:34,height:34,padding:0,border:"1px solid var(--line)",borderRadius:8,background:"#fff",color:"var(--muted)",fontSize:20,lineHeight:1,cursor:"pointer"},
+  menuOverlay:{position:"fixed",inset:0,zIndex:75},
+  menuPop:{position:"absolute",top:"112%",right:0,zIndex:80,background:"#fff",border:"1px solid var(--line)",borderRadius:10,boxShadow:"0 6px 22px rgba(80,70,40,.2)",padding:4,minWidth:124},
+  menuItem:{display:"block",width:"100%",textAlign:"left",padding:"10px 12px",border:"none",background:"transparent",fontSize:14,fontWeight:700,color:"var(--ink)",borderRadius:7,whiteSpace:"nowrap",cursor:"pointer"},
+  bottomNav:{position:"fixed",left:0,right:0,bottom:0,zIndex:60,display:"flex",background:"var(--card)",borderTop:"1px solid var(--line)",boxShadow:"0 -2px 12px rgba(80,70,40,.08)",paddingBottom:"env(safe-area-inset-bottom)"},
+  bnItem:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"8px 4px 7px",border:"none",background:"transparent",color:"var(--muted)",fontWeight:700,cursor:"pointer"},
+  bnActive:{color:"var(--accent)"},
+  bnIcon:{fontSize:20,lineHeight:1},
+  bnLabel:{fontSize:10.5,whiteSpace:"nowrap"},
+  bnMore:{position:"absolute",bottom:"100%",right:8,marginBottom:8,zIndex:80,background:"#fff",border:"1px solid var(--line)",borderRadius:12,boxShadow:"0 6px 24px rgba(80,70,40,.22)",padding:6,minWidth:168},
+  bnMoreItem:{display:"flex",alignItems:"center",gap:10,width:"100%",textAlign:"left",padding:"11px 14px",border:"none",background:"transparent",fontSize:15,fontWeight:700,color:"var(--ink)",borderRadius:8,cursor:"pointer"},
   groupBox:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:11,padding:"10px 12px",marginBottom:12},
   groupHead:{display:"flex",justifyContent:"space-between",alignItems:"baseline",borderBottom:"1px solid var(--line)",paddingBottom:7,marginBottom:7,gap:8,flexWrap:"wrap"},
   groupTotal:{fontSize:12.5,fontWeight:700,color:"var(--muted)"},

@@ -1,0 +1,9 @@
+{
+  "name": "makiba-feedstock",
+  "version": "1.0.0",
+  "private": true,
+  "description": "まきば在庫 - 餌の在庫管理アプリ（PWA + LINE通知）",
+  "scripts": {
+    "test": "node --test"
+  }
+}

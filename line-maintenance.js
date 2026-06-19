@@ -91,4 +91,9 @@ async function main() {
   console.log("リマインド送信:\n" + text);
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// テストから require したときは main() を実行せず、純粋ロジックだけ公開する。
+if (require.main === module) {
+  main().catch(e => { console.error(e); process.exit(1); });
+}
+
+module.exports = { isDayBeforeMonthEnd, daysBetween, jstNow, jstToday };

@@ -1144,15 +1144,17 @@ function PendingOrdersView({items, onToggleReceived, onDelOrder, onEditOrder, on
   };
 
   return (<div>
-    {/* 農場フィルタ */}
-    <div style={{...S.modeRow,marginBottom:6}}>
-      <button style={{...S.modeTab,...(farmFilter==="all"?S.modeActive:{})}} onClick={()=>setFarmFilter("all")}>全農場</button>
-      {FARMS.map(f=>(<button key={f.id} style={{...S.modeTab,...(farmFilter===f.id?S.modeActive:{})}} onClick={()=>setFarmFilter(f.id)}>{f.name}</button>))}
-      <button style={{...S.modeTab,...(farmFilter==="shared"?S.modeActive:{})}} onClick={()=>setFarmFilter("shared")}>共通</button>
-    </div>
-    <div style={S.modeRow}>
-      <button style={{...S.modeTab,...(subTab==="list"?S.modeActive:{})}} onClick={()=>setSubTab("list")}>一覧</button>
-      <button style={{...S.modeTab,...(subTab==="byItem"?S.modeActive:{})}} onClick={()=>setSubTab("byItem")}>商品別</button>
+    {/* 絞り込み：農場プルダウン ＋ 表示切替（1行に集約） */}
+    <div style={S.filterBar}>
+      <select style={S.filterSelect} value={farmFilter} onChange={e=>setFarmFilter(e.target.value)}>
+        <option value="all">全農場</option>
+        {FARMS.map(f=>(<option key={f.id} value={f.id}>{f.name}</option>))}
+        <option value="shared">共通</option>
+      </select>
+      <div style={S.segRow}>
+        <button style={{...S.segBtn,...(subTab==="list"?S.segActive:{})}} onClick={()=>setSubTab("list")}>一覧</button>
+        <button style={{...S.segBtn,...(subTab==="byItem"?S.segActive:{})}} onClick={()=>setSubTab("byItem")}>商品別</button>
+      </div>
     </div>
     {filtered.length===0?<div style={S.empty}>該当する未入荷の発注予定はありません。</div>:
       subTab==="list"?(<div>
@@ -1247,8 +1249,10 @@ function ByFarmPlanList({items, openId, setOpenId, onSelect, onAddOrder, warning
 
   return (<>
     {excludedMode&&<div style={{...S.miniNote,marginBottom:8}}>発注プランの並び替えから除外されている餌です。発注はここから普通に追加できます。</div>}
-    <div style={S.farmRow}>
-      {tabs.map(t=>(<button key={t.id} style={{...S.farmTab,...(filter===t.id?S.farmActive:{})}} onClick={()=>setFilter(t.id)}>{t.name}</button>))}
+    <div style={S.filterBar}>
+      <select style={S.filterSelect} value={filter} onChange={e=>setFilter(e.target.value)}>
+        {tabs.map(t=>(<option key={t.id} value={t.id}>{t.name}</option>))}
+      </select>
     </div>
     {isWide&&(<div style={headerStyle}>
       {showFarms.map(fid=>{ const fc=farmColor(fid); const fn=FARMS.find(f=>f.id===fid)?.name||fid;
@@ -2333,9 +2337,14 @@ const S={
   orderUnit:{fontSize:14,color:"var(--muted)",marginLeft:3},
   cardMeta:{fontSize:12.5,color:"var(--muted)",lineHeight:1.5},
   empty:{color:"var(--muted)",fontSize:14,textAlign:"center",padding:"20px 10px"},
-  farmRow:{display:"flex",gap:8,marginBottom:12},
-  farmTab:{flex:1,padding:"9px",border:"1px solid var(--line)",background:"transparent",borderRadius:10,fontWeight:700,fontSize:13.5,color:"var(--muted)"},
-  farmActive:{background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"},
+  farmRow:{display:"flex",gap:3,marginBottom:12,background:"rgba(120,110,80,.08)",borderRadius:11,padding:3},
+  farmTab:{flex:1,padding:"9px",border:"none",background:"transparent",borderRadius:8,fontWeight:700,fontSize:13.5,color:"var(--muted)"},
+  farmActive:{background:"var(--accent)",color:"#fff"},
+  filterBar:{display:"flex",gap:8,marginBottom:12,alignItems:"stretch"},
+  filterSelect:{flex:1,minWidth:0,padding:"9px 10px",border:"1px solid var(--line)",borderRadius:10,fontSize:14.5,fontWeight:700,background:"#fff",color:"var(--ink)"},
+  segRow:{display:"flex",gap:3,background:"rgba(120,110,80,.08)",borderRadius:10,padding:3,flex:"0 0 auto"},
+  segBtn:{padding:"7px 14px",border:"none",background:"transparent",borderRadius:8,fontWeight:700,fontSize:13,color:"var(--muted)",whiteSpace:"nowrap"},
+  segActive:{background:"var(--accent)",color:"#fff"},
   field:{display:"block",marginBottom:14},
   fieldLabel:{display:"block",fontSize:13,fontWeight:700,marginBottom:6},
   input:{width:"100%",padding:"10px 12px",border:"1px solid var(--line)",borderRadius:10,fontSize:16,background:"#fff",color:"var(--ink)"},
@@ -2457,9 +2466,9 @@ const S={
   statValue:{fontWeight:700,fontSize:16},
   note:{fontSize:12.5,color:"var(--muted)",marginTop:12,lineHeight:1.6},
   orderForm:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:12,padding:12,marginBottom:12},
-  modeRow:{display:"flex",gap:6,marginBottom:10},
-  modeTab:{flex:1,padding:"8px",border:"1px solid var(--line)",background:"transparent",borderRadius:9,fontWeight:700,fontSize:13,color:"var(--muted)"},
-  modeActive:{background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"},
+  modeRow:{display:"flex",gap:3,marginBottom:10,background:"rgba(120,110,80,.08)",borderRadius:11,padding:3},
+  modeTab:{flex:1,padding:"8px 6px",border:"none",background:"transparent",borderRadius:8,fontWeight:700,fontSize:13,color:"var(--muted)",whiteSpace:"nowrap"},
+  modeActive:{background:"var(--accent)",color:"#fff"},
   presetBox:{background:"var(--card)",border:"1px dashed var(--line)",borderRadius:12,padding:12,marginBottom:6},
   presetHead:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8},
   presetTitle:{fontSize:13,fontWeight:700},

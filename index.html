@@ -22,6 +22,9 @@
 <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+<!-- 在庫計算・Excel解析の共通ロジック（line-reminder.js とも共有。テスト対象） -->
+<script src="./feed-calc.js"></script>
+<script src="./excel-import.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
   :root{--paper:#f4efe2;--card:#fbf8ef;--ink:#33302a;--muted:#8a8475;--line:#e3dcc8;--ok:#5f7d3c;--warn:#b27a1e;--bad:#a8492f;--accent:#6b8f3a;}
@@ -202,11 +205,8 @@ async function copyToClipboard(text){
   document.body.removeChild(ta); return ok;
 }
 
-function countToKg(item, q){
-  if(!q) return 0;
-  if(q.__kg!=null) return Number(q.__kg)||0;  // 手入力(kg直接)
-  let kg=0; for(const u of (item.units||[])){ const n=q?.[u.id]; if(n) kg+=n*u.kg;} return kg;
-}
+// 在庫計算の中核は feed-calc.js に集約（line-reminder.js と共有・テスト対象）
+function countToKg(item, q){ return FeedCalc.countToKg(item, q); }
 
 const SEED = {
   farms: [{ id: "a", name: "第1農場" }, { id: "b", name: "第2農場" }],
@@ -229,30 +229,10 @@ const SEED = {
 };
 
 // ── 消費計算 ────────────────────────────────────
-function farmStats(item, fid){
-  const counts=[...(item.counts?.[fid]||[])].sort((a,b)=>a.date.localeCompare(b.date));
-  const last=counts[counts.length-1]||null, prev=counts[counts.length-2]||null;
-  const lastKg=last?countToKg(item,last.qtys):null;
-  const fd=item.feedDaily?.[fid];
-  let baseDaily=null, source=null;
-  if(fd&&fd.dailyKg>0){ baseDaily=fd.dailyKg; source="excel"; }
-  else if(last&&prev){
-    const days=Math.max(1,Math.round((new Date(last.date)-new Date(prev.date))/86400000));
-    const diff=countToKg(item,prev.qtys)-lastKg;
-    baseDaily=diff>0?diff/days:0; source="count";
-  }
-  const extra=(item.extraDaily?.[fid])||0;   // 別給与（1日あたりkg・Excel/棚卸しに含まれない分）
-  let dailyKg=baseDaily!=null?baseDaily+extra:(extra>0?extra:null);
-  if(baseDaily==null&&extra>0) source="extra";
-  const usage=dailyKg!=null?dailyKg*30:null;
-  return { last,lastKg,usage,dailyKg,baseDaily,extra,source,lastDate:last?.date||null };
-}
-// 餌の在庫モード(shared:全農場共通 / split:農場別)。古いデータはsplit扱い。
-function stockModeOf(item){ return item?.stockMode==="shared"?"shared":"split"; }
-// stockModeに応じた「在庫スコープのリスト」(常に農場別。共通モードは「表示時に合計する」だけ)
-function stockScopesOf(item){ return item.farms||[]; }
-// 発注の対象農場(古いordersはshared互換)
-function orderForFarm(o){ return o.forFarm||"shared"; }
+function farmStats(item, fid){ return FeedCalc.farmStats(item, fid); }
+function stockModeOf(item){ return FeedCalc.stockModeOf(item); }
+function stockScopesOf(item){ return FeedCalc.stockScopesOf(item); }
+function orderForFarm(o){ return FeedCalc.orderForFarm(o); }
 
 // 農場の在庫の土台。棚卸しが無ければ、その農場宛ての受領済み入荷(入荷予定日が今日以前)の最古を初期在庫とする。
 function farmBase(item,fid){
@@ -1915,137 +1895,12 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
     setSelectedTargets({}); setMsg("");
   };
 
-  // 平山牧場フォーマット解析
+  // 平山牧場フォーマット解析。純粋ロジックは excel-import.js に集約（テスト対象）。
+  // ここでは解析結果をReactのstateへ反映する薄いラッパーのみ。
   function parseHirayama(sheets, sheetFarmOverride){
-    // 農場対応: FARMSの名前を見てシートを自動マッチ。手動マッピング(sheetFarmOverride)があれば優先。
-    // sheetFarmOverride: { sheetName: farmId } の形式
-    const farmMap=FARMS.map(f=>({keywords:[f.name],farmId:f.id,farmName:f.name}));
-    const results={};
-    let foundAny=false;
-    const debugSheets=Object.keys(sheets);
-    const debug=[]; // 各シートの解析結果(画面表示用)
-
-    // どのシートをどの農場に割り当てるか決める
-    const assignment=[]; // {sheetName, farmId, farmName}
-    if(sheetFarmOverride){
-      for(const [sheetName,farmId] of Object.entries(sheetFarmOverride)){
-        if(farmId==="skip") continue;
-        const farm=FARMS.find(f=>f.id===farmId); if(!farm) continue;
-        assignment.push({sheetName, farmId, farmName:farm.name});
-      }
-    } else {
-      // 自動: 各農場名を含むシートを探す
-      for(const {keywords, farmId, farmName} of farmMap){
-        const sheetName=debugSheets.find(nm=>{
-          const norm=String(nm).replace(/\s/g,"").trim();
-          return keywords.some(k=>norm.includes(k));
-        });
-        if(sheetName) assignment.push({sheetName, farmId, farmName});
-      }
-    }
-
-    for(const {sheetName, farmId, farmName} of assignment){
-      const sheetDebug={sheetName, farmId, farmName, totalRows:0, dateRow:null, dateCount:0, dateFromTo:null, sections:[], feeds:[], excluded:[]};
-      debug.push(sheetDebug);
-      const rows=sheets[sheetName]; if(!rows){ sheetDebug.error="シートが読み込めません"; continue; }
-      sheetDebug.totalRows=rows.length;
-
-      const isDateLike=(v)=>{
-        if(v==null) return null;
-        if(v instanceof Date) return v.toISOString().slice(0,10);
-        const s=String(v).trim();
-        if(/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(s)){ const d=new Date(s); if(!isNaN(d)) return d.toISOString().slice(0,10); }
-        if(/^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(s)){ const d=new Date(s); if(!isNaN(d)) return d.toISOString().slice(0,10); }
-        return null;
-      };
-      let dateRow=-1, dateStartCol=2;
-      for(let r=0;r<Math.min(rows.length,30);r++){
-        const row=rows[r]||[]; let dc=0, firstC=-1;
-        for(let c=0;c<Math.min(row.length,60);c++){
-          if(isDateLike(row[c])){ dc++; if(firstC<0) firstC=c; }
-        }
-        if(dc>=3){ dateRow=r; dateStartCol=firstC; break; }
-      }
-      if(dateRow<0){ sheetDebug.error="日付行が見つかりませんでした（最初の30行で日付らしき値が3つ以上並ぶ行が必要）"; continue; }
-      const dates=[]; const dateCols=[];
-      for(let c=dateStartCol;c<rows[dateRow].length;c++){
-        const d=isDateLike(rows[dateRow][c]);
-        if(d){ dateCols.push(c); dates.push(d); }
-      }
-      sheetDebug.dateRow=dateRow+1; // 人間向けに1始まり
-      sheetDebug.dateCount=dates.length;
-      sheetDebug.dateFromTo=dates.length>0?`${dates[0]}〜${dates[dates.length-1]}`:null;
-
-      // 餌セクション開始行
-      const sectionStarts=[];
-      for(let r=0;r<rows.length;r++){
-        const v=rows[r]?.[0]; if(!v) continue;
-        const s=String(v);
-        if(s.includes("エサ使用量")&&!s.includes("残餌")) sectionStarts.push({row:r, label:s.trim()});
-      }
-      if(sectionStarts.length===0){ sheetDebug.error="「エサ使用量」を含むセクション見出しが見つかりませんでした"; continue; }
-      const ranges=sectionStarts.map((s,i)=>({startRow:s.row+1, endRow:(sectionStarts[i+1]?.row||rows.length), label:s.label}));
-      sheetDebug.sections=ranges.map(r=>({label:r.label, startRow:r.startRow+1, endRow:r.endRow}));
-
-      const isNotFeed=(s)=>{
-        if(s.includes("使用量")) return "「使用量」を含む";
-        if(s.includes("合計")) return "「合計」を含む";
-        if(s.includes("平均")) return "「平均」を含む";
-        if(s.includes("乾物")) return "「乾物」を含む";
-        if(s.includes("残餌")) return "「残餌」を含む";
-        if(s.includes("ロボ配合平均")) return "ロボ配合平均";
-        if(s.includes("TMR")||s.includes("ＴＭR")||s.includes("ＴＭＲ")) return "TMR";
-        if(s.includes("割合")) return "「割合」を含む";
-        if(s.includes("率")) return "「率」を含む";
-        if(s.includes("頭数")) return "「頭数」を含む";
-        if(s.includes("群")) return "「群」を含む";
-        if(s==="水"||s==="塩ブロック") return "除外名";
-        if(s.includes("ロール")) return "「ロール」を含む";
-        if(s.includes("ブロック")) return "「ブロック」を含む";
-        return null;
-      };
-
-      const feedDaily={};
-      for(const r of ranges){
-        for(let row=r.startRow;row<r.endRow;row++){
-          const name=rows[row]?.[0]; if(!name) continue;
-          const ns=String(name).trim(); if(!ns) continue;
-          const reason=isNotFeed(ns);
-          if(reason){ sheetDebug.excluded.push({row:row+1, name:ns, reason}); continue; }
-          let rowTotal=0, rowDays=0;
-          for(let i=0;i<dateCols.length;i++){
-            const c=dateCols[i]; const v=rows[row][c];
-            const num=typeof v==="number"?v:parseFloat(v);
-            if(!isNaN(num)&&num>0){
-              if(!feedDaily[ns]) feedDaily[ns]={};
-              feedDaily[ns][dates[i]]=(feedDaily[ns][dates[i]]||0)+num;
-              rowTotal+=num; rowDays++;
-            }
-          }
-          // 検出された餌行（複数同名が出る場合は1つにまとめる）
-          const exist=sheetDebug.feeds.find(f=>f.name===ns);
-          if(exist){ exist.rows.push(row+1); exist.total+=rowTotal; exist.days+=rowDays; }
-          else sheetDebug.feeds.push({name:ns, rows:[row+1], total:rowTotal, days:rowDays});
-        }
-      }
-
-      const farmRes={};
-      for(const [name,daily] of Object.entries(feedDaily)){
-        const ds=Object.keys(daily).filter(d=>daily[d]>0).sort();
-        if(ds.length===0) continue;
-        const total=ds.reduce((s,d)=>s+daily[d],0);
-        const from=ds[0], to=ds[ds.length-1];
-        const dailyKgAll=total/ds.length;
-        const cut=new Date(new Date(to)-14*86400000).toISOString().slice(0,10);
-        const recentDs=ds.filter(d=>d>=cut);
-        const recentTotal=recentDs.reduce((s,d)=>s+daily[d],0);
-        const dailyKgRecent=recentDs.length>0?recentTotal/recentDs.length:dailyKgAll;
-        farmRes[name]={dailyKgAll, dailyKgRecent, total, recentTotal, recentDays:recentDs.length, from, to, days:ds.length, rows:ds.length, recentFrom:recentDs[0]||from};
-      }
-      if(Object.keys(farmRes).length>0){ results[farmId]=farmRes; foundAny=true; }
-    }
-    setHirayamaDebug({sheets:debugSheets, assignment, perSheet:debug});
-    if(!foundAny){ setMsg(`「${FARMS.map(f=>f.name).join("」「")}」に対応するシートが見つからないか、日付行が認識できませんでした。読み込めたシート: ${debugSheets.join(" / ")}。手動マッピングを試すか、開発者にこのメッセージを伝えてください。`); setHirayamaResults(null); return; }
+    const {results, foundAny, debug}=ExcelImportCore.parseHirayamaSheets(sheets, sheetFarmOverride, FARMS);
+    setHirayamaDebug(debug);
+    if(!foundAny){ setMsg(`「${FARMS.map(f=>f.name).join("」「")}」に対応するシートが見つからないか、日付行が認識できませんでした。読み込めたシート: ${debug.sheets.join(" / ")}。手動マッピングを試すか、開発者にこのメッセージを伝えてください。`); setHirayamaResults(null); return; }
     setHirayamaResults(results);
     const targets={};
     for(const [fid,feeds] of Object.entries(results)){

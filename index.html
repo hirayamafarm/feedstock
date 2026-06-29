@@ -478,7 +478,7 @@ function canEdit(role, desc){
 }
 
 // ── 使用量一覧（餌ごと・農場別の日/月使用量） ──────────
-function UsageView({items}){
+function UsageView({items,onSelect}){
   const sorted=[...items].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
   return (<div style={S.fade}>
     <h2 style={S.h2}>使用量</h2>
@@ -491,7 +491,7 @@ function UsageView({items}){
         const totDaily=rows.reduce((s,r)=>s+(r.st.dailyKg||0),0);
         return (<div key={it.id} style={S.usageCard}>
           <div style={S.usageHead}>
-            <span style={S.usageName}>{it.name}{stockModeOf(it)==="shared"&&<span style={S.sharedBadge}>共通</span>}</span>
+            <button style={S.usageNameBtn} onClick={()=>onSelect(it.id)}>{it.name}{stockModeOf(it)==="shared"&&<span style={S.sharedBadge}>共通</span>}<span style={S.usageChevron}>›</span></button>
             {anyData&&<span style={S.usageTotal}>合計 1日 {fmt(totDaily)}{u}／月 {fmt(totDaily*30)}{u}</span>}
           </div>
           <table style={S.usageTable}>
@@ -724,7 +724,7 @@ function App(){
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items}/>}
-          {view==="usage"&&<UsageView items={state.items}/>}
+          {view==="usage"&&<UsageView items={state.items} onSelect={id=>{setSelId(id);setPrevView("usage");setView("detail");}}/>}
           {view==="diff"&&<DiffView items={state.items} records={state.discrepancies||[]}/>}
           {view==="data"&&<DataView items={state.items} log={log} me={me} onSetMe={setMe} onApply={applyFeedDaily} onClear={clearFeedDaily} onSetExtra={setExtra} onAddItem={addItem} role={role}/>}
           {view==="settings"&&<SettingsView farms={FARMS} onRenameFarm={renameFarm} state={state} onRestore={restoreState} warningDays={warningDays} onSetWarningDays={setWarningDays} role={role} accessCodes={state.accessCodes||{}} onSetAccessCodes={setAccessCodes}/>}
@@ -2691,6 +2691,8 @@ const S={
   usageCard:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:12,padding:"12px 14px",marginBottom:11,boxShadow:"0 1px 3px rgba(80,70,40,.05)"},
   usageHead:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap",marginBottom:8},
   usageName:{fontFamily:"'Zen Maru Gothic',sans-serif",fontWeight:700,fontSize:16},
+  usageNameBtn:{display:"inline-flex",alignItems:"center",background:"transparent",border:"none",padding:0,fontFamily:"'Zen Maru Gothic',sans-serif",fontWeight:700,fontSize:16,color:"var(--accent)",cursor:"pointer",textAlign:"left"},
+  usageChevron:{fontSize:18,fontWeight:700,color:"var(--accent)",marginLeft:4},
   usageTotal:{fontSize:12,fontWeight:700,color:"var(--accent)"},
   usageTable:{width:"100%",borderCollapse:"collapse"},
   usageTh:{textAlign:"right",fontSize:11.5,fontWeight:700,color:"var(--muted)",padding:"4px 6px",borderBottom:"1px solid var(--line)"},

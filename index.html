@@ -476,6 +476,46 @@ function canEdit(role, desc){
   return false; // viewer
 }
 
+// ── 使用量一覧（餌ごと・農場別の日/月使用量） ──────────
+function UsageView({items}){
+  const sorted=[...items].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
+  return (<div style={S.fade}>
+    <h2 style={S.h2}>使用量</h2>
+    <div style={S.lead}>餌ごとの農場別「1日使用量」と「月間使用量(1日×30)」の一覧です。棚卸しまたはExcelの実績から算出し、別給与(上乗せ分)を含みます。</div>
+    {sorted.length===0?<div style={S.empty}>餌が登録されていません。先に「棚卸し」や「設定」から餌を登録してください。</div>:
+      sorted.map(it=>{
+        const u=unitOf(it);
+        const rows=(it.farms||[]).map(fid=>({fid,name:FARMS.find(f=>f.id===fid)?.name||fid,st:farmStats(it,fid)}));
+        const anyData=rows.some(r=>r.st.dailyKg!=null);
+        const totDaily=rows.reduce((s,r)=>s+(r.st.dailyKg||0),0);
+        return (<div key={it.id} style={S.usageCard}>
+          <div style={S.usageHead}>
+            <span style={S.usageName}>{it.name}{stockModeOf(it)==="shared"&&<span style={S.sharedBadge}>共通</span>}</span>
+            {anyData&&<span style={S.usageTotal}>合計 1日 {fmt(totDaily)}{u}／月 {fmt(totDaily*30)}{u}</span>}
+          </div>
+          <table style={S.usageTable}>
+            <thead><tr>
+              <th style={{...S.usageTh,textAlign:"left"}}>農場</th>
+              <th style={S.usageTh}>1日使用量</th>
+              <th style={S.usageTh}>月間使用量</th>
+            </tr></thead>
+            <tbody>
+              {rows.map(r=>{ const d=r.st.dailyKg, mo=r.st.usage;
+                const src=r.st.source==="excel"?"Excel":r.st.source==="count"?"棚卸し":r.st.source==="extra"?"別給与":null;
+                return (<tr key={r.fid}>
+                  <td style={S.usageTdName}>{r.name}{src&&<span style={S.usageSrc}>{src}</span>}</td>
+                  <td style={S.usageTd}>{d!=null?<>{fmt(d)}<span style={S.usageUnit}>{u}</span></>:"—"}</td>
+                  <td style={S.usageTd}>{mo!=null?<><b>{fmt(mo)}</b><span style={S.usageUnit}>{u}</span></>:"—"}</td>
+                </tr>);
+              })}
+            </tbody>
+          </table>
+        </div>);
+      })
+    }
+  </div>);
+}
+
 // ── 下タブ用ラインアイコン（LINE風アウトライン） ──────────
 function NavIcon({name,size=27}){
   const p={width:size,height:size,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:1.8,strokeLinecap:"round",strokeLinejoin:"round"};
@@ -483,6 +523,7 @@ function NavIcon({name,size=27}){
     order:<g><path d="M6 8h12l-1 12H7L6 8z"/><path d="M9 8a3 3 0 0 1 6 0"/></g>,
     inventory:<g><rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M8.5 11h7M8.5 15h7"/></g>,
     calendar:<g><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M4 9.5h16M8 3v4M16 3v4"/></g>,
+    usage:<g><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-6"/></g>,
     more:<path d="M4 7h16M4 12h16M4 17h16"/>,
     diff:<path d="M3 20h18M6 20V11M12 20V5M18 20v-6"/>,
     data:<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>,
@@ -678,10 +719,11 @@ function App(){
         })()}
       </header>
       <main style={S.main}>
-        {(view==="order"||view==="inventory"||view==="calendar"||view==="diff"||view==="data"||view==="settings") && (<>
+        {(view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings") && (<>
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items}/>}
+          {view==="usage"&&<UsageView items={state.items}/>}
           {view==="diff"&&<DiffView items={state.items} records={state.discrepancies||[]}/>}
           {view==="data"&&<DataView items={state.items} log={log} me={me} onSetMe={setMe} onApply={applyFeedDaily} onClear={clearFeedDaily} onSetExtra={setExtra} onAddItem={addItem} role={role}/>}
           {view==="settings"&&<SettingsView farms={FARMS} onRenameFarm={renameFarm} state={state} onRestore={restoreState} warningDays={warningDays} onSetWarningDays={setWarningDays} role={role} accessCodes={state.accessCodes||{}} onSetAccessCodes={setAccessCodes}/>}
@@ -693,9 +735,9 @@ function App(){
         {view==="edit"&&sel&&<EditView item={sel} onSave={(patch)=>{editItem(sel.id,patch);setView("detail");}} onCancel={()=>setView("detail")}/>}
         {view==="add"&&<AddView onSave={it=>{addItem(it);setView("inventory");}} onCancel={()=>setView("inventory")}/>}
       </main>
-      {(view==="order"||view==="inventory"||view==="calendar"||view==="diff"||view==="data"||view==="settings")&&(
+      {(view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings")&&(
         <nav style={S.bottomNav} className="no-print">
-          {[{id:"order",icon:"order",label:"発注"},{id:"inventory",icon:"inventory",label:"棚卸し"},{id:"calendar",icon:"calendar",label:"カレンダー"}].map(t=>(
+          {[{id:"order",icon:"order",label:"発注"},{id:"inventory",icon:"inventory",label:"棚卸し"},{id:"calendar",icon:"calendar",label:"カレンダー"},{id:"usage",icon:"usage",label:"使用量"}].map(t=>(
             <button key={t.id} style={{...S.bnItem,...(view===t.id?S.bnActive:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
               <span style={S.bnIcon}><NavIcon name={t.icon}/></span><span style={S.bnLabel}>{t.label}</span>
             </button>
@@ -2625,6 +2667,16 @@ const S={
   exportLabel:{fontSize:13,fontWeight:700,color:"var(--ink)"},
   exportDate:{padding:"7px 9px",border:"1px solid var(--line)",borderRadius:8,fontSize:14,background:"#fff",color:"var(--ink)",fontWeight:700},
   exportBtn:{marginLeft:"auto",background:"var(--ok)",color:"#fff",border:"none",borderRadius:9,padding:"8px 18px",fontSize:13.5,fontWeight:700,cursor:"pointer"},
+  usageCard:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:12,padding:"12px 14px",marginBottom:11,boxShadow:"0 1px 3px rgba(80,70,40,.05)"},
+  usageHead:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap",marginBottom:8},
+  usageName:{fontFamily:"'Zen Maru Gothic',sans-serif",fontWeight:700,fontSize:16},
+  usageTotal:{fontSize:12,fontWeight:700,color:"var(--accent)"},
+  usageTable:{width:"100%",borderCollapse:"collapse"},
+  usageTh:{textAlign:"right",fontSize:11.5,fontWeight:700,color:"var(--muted)",padding:"4px 6px",borderBottom:"1px solid var(--line)"},
+  usageTdName:{textAlign:"left",fontSize:14,fontWeight:700,padding:"8px 6px",borderBottom:"1px solid var(--line)"},
+  usageTd:{textAlign:"right",fontSize:15,padding:"8px 6px",borderBottom:"1px solid var(--line)",whiteSpace:"nowrap"},
+  usageUnit:{fontSize:11.5,color:"var(--muted)",marginLeft:2},
+  usageSrc:{fontSize:10,fontWeight:700,color:"var(--muted)",background:"rgba(120,110,80,.1)",borderRadius:6,padding:"1px 6px",marginLeft:6,verticalAlign:"middle"},
   itemFilterRow:{display:"flex",flexWrap:"wrap",gap:6},
   itemFilterBtn:{padding:"5px 11px",border:"1px solid var(--line)",background:"#fff",borderRadius:14,fontSize:12.5,fontWeight:700,color:"var(--muted)"},
   itemFilterOn:{background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"},

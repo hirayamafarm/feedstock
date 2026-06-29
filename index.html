@@ -611,7 +611,7 @@ function App(){
     const it=state.items.find(i=>i.id===id);
     let pred=null;
     if(it){
-      const counts=[...(it.counts?.[fid]||[])].sort((a,b)=>a.date.localeCompare(b.date)).filter(c=>ym(c.date)!==ym(date));
+      const counts=[...(it.counts?.[fid]||[])].sort((a,b)=>a.date.localeCompare(b.date)).filter(c=>c.date<date);
       if(counts.length>0){
         const last=counts[counts.length-1];
         const fs=farmStats(it,fid); const dailyKg=fs.dailyKg||0;
@@ -628,15 +628,16 @@ function App(){
     }
     update(s=>{
       const it2=s.items.find(i=>i.id===id); it2.counts=it2.counts||{}; it2.counts[fid]=it2.counts[fid]||[];
-      const ex=it2.counts[fid].find(c=>ym(c.date)===ym(date)); if(ex){ex.date=date;ex.qtys=qtys;} else it2.counts[fid].push({date,qtys});
+      // 同じ日付の記録だけ上書き（修正用）。別の日の記録（同じ月でも）はすべて残す。
+      const ex=it2.counts[fid].find(c=>c.date===date); if(ex){ex.qtys=qtys;} else it2.counts[fid].push({date,qtys});
       // 差分記録
       if(pred!=null){
         const actual=countToKg(it2,qtys);
         const diff=actual-pred;
         const pct=pred>0?(diff/pred*100):null;
         s.discrepancies=s.discrepancies||[];
-        // 同じ餌・農場・棚卸し月の記録があれば置き換え
-        s.discrepancies=s.discrepancies.filter(r=>!(r.itemId===id&&r.farmId===fid&&ym(r.date)===ym(date)));
+        // 同じ餌・農場・同じ棚卸し日の記録だけ置き換え（別日の差分記録は残す）
+        s.discrepancies=s.discrepancies.filter(r=>!(r.itemId===id&&r.farmId===fid&&r.date===date));
         s.discrepancies.unshift({itemId:id,farmId:fid,date,predictedKg:pred,actualKg:actual,diffKg:diff,pctDiff:pct,recordedAt:new Date().toISOString()});
         s.discrepancies=s.discrepancies.slice(0,200);
       }

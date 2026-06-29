@@ -1646,8 +1646,63 @@ function CalendarView({items}){
   const [month,setMonth]=useState(thisMonth());
   // 全部表示で表示する餌の選択（デフォルトは全餌）
   const [shownItemIds,setShownItemIds]=useState(null); // null=全部
+  // Excel出力の期間（デフォルト: 今日〜90日後）
+  const [exStart,setExStart]=useState(today());
+  const [exEnd,setExEnd]=useState(()=>{ const d=new Date(today()+"T00:00:00"); d.setDate(d.getDate()+89); return d.toISOString().slice(0,10); });
   useEffect(()=>{ if(!item) return; if(stockModeOf(item)==="shared"){ if(scope!=="all") setScope("all"); } else if(!item.farms.includes(scope)&&scope!=="all") setScope(item.farms[0]); },[itemId]);
   if(!item) return <div style={S.empty}>餌が登録されていません。</div>;
+  // ── カレンダーをExcel出力（期間指定） ──
+  const exportExcel=()=>{
+    if(exEnd<exStart){ alert("終了日は開始日以降にしてください。"); return; }
+    // 出力する列を決める（個別表示=その餌のスコープ別 / 全部表示=表示中の餌×scope）
+    let cols;
+    if(mode==="single"){
+      cols=singleScopeOpts.map(o=>({item, scope:o.id, label:item.name, sub:o.name}));
+    } else {
+      const shown=shownItemIds===null?items.map(i=>i.id):shownItemIds;
+      cols=[];
+      for(const it of items){
+        if(!shown.includes(it.id)) continue;
+        const sm=stockModeOf(it);
+        if(sm==="shared") cols.push({item:it,scope:"all",label:it.name,sub:"共通"});
+        else if(allScope==="all") cols.push({item:it,scope:"all",label:it.name,sub:""});
+        else if(allScope==="both"){ for(const fid of it.farms) cols.push({item:it,scope:fid,label:it.name,sub:FARMS.find(f=>f.id===fid)?.name}); }
+        else if(it.farms.includes(allScope)) cols.push({item:it,scope:allScope,label:it.name,sub:""});
+      }
+    }
+    if(cols.length===0){ alert("出力する餌がありません。表示する餌を選んでください。"); return; }
+    // 期間内の日付配列（最大400日）
+    const dates=[];
+    for(let d=new Date(exStart+"T00:00:00"), e=new Date(exEnd+"T00:00:00"); d<=e&&dates.length<400; d.setDate(d.getDate()+1)){
+      dates.push({iso:d.toISOString().slice(0,10), y:d.getFullYear(), m:d.getMonth()+1, d:d.getDate(), dow:d.getDay()});
+    }
+    // 各列を、期間にかかる月ごとにシミュレート
+    const months=[...new Set(dates.map(x=>`${x.y}-${String(x.m).padStart(2,"0")}`))];
+    const sims=cols.map(c=>{ const o={}; for(const ym of months) o[ym]=simulateMonth(c.item,c.scope,ym); return o; });
+    // 行列(AoA)を組み立て
+    const WD=["日","月","火","水","木","金","土"];
+    const aoa=[];
+    aoa.push([`まきば在庫カレンダー 予想残量（${exStart} 〜 ${exEnd}）`]);
+    aoa.push(["日付",...cols.map(c=>`${c.label}${c.sub?`（${c.sub}）`:""}［${unitOf(c.item)}］`)]);
+    for(const dt of dates){
+      const ym=`${dt.y}-${String(dt.m).padStart(2,"0")}`;
+      const row=[`${dt.iso}(${WD[dt.dow]})`];
+      cols.forEach((c,ci)=>{
+        const sim=sims[ci][ym];
+        const cell=sim?sim.cells[dt.d-1]:null;
+        if(!cell||cell.before){ row.push(""); return; }
+        const kg=Math.round(cell.kg);
+        if(cell.info&&cell.info.kg) row.push(`${kg}（入荷+${Math.round(cell.info.kg)}）`);
+        else row.push(kg);
+      });
+      aoa.push(row);
+    }
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"]=[{wch:14},...cols.map(()=>({wch:18}))];
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"カレンダー");
+    XLSX.writeFile(wb,`まきば在庫カレンダー_${exStart}_${exEnd}.xlsx`);
+  };
   const [Y,M]=month.split("-").map(Number);
   const shift=(d)=>{ let y=Y,m=M+d; if(m<1){m=12;y--;} if(m>12){m=1;y++;} setMonth(`${y}-${String(m).padStart(2,"0")}`); };
   return (<div style={S.fade}>
@@ -1655,6 +1710,13 @@ function CalendarView({items}){
     <div style={S.modeRow} className="no-print">
       <button style={{...S.modeTab,...(mode==="single"?S.modeActive:{})}} onClick={()=>setMode("single")}>個別表示</button>
       <button style={{...S.modeTab,...(mode==="all"?S.modeActive:{})}} onClick={()=>setMode("all")}>全部表示</button>
+    </div>
+    <div style={S.exportBar} className="no-print">
+      <span style={S.exportLabel}>📊 Excel出力</span>
+      <input type="date" style={S.exportDate} value={exStart} onChange={e=>setExStart(e.target.value)}/>
+      <span style={{color:"var(--muted)",fontWeight:700}}>〜</span>
+      <input type="date" style={S.exportDate} value={exEnd} onChange={e=>setExEnd(e.target.value)}/>
+      <button style={S.exportBtn} onClick={exportExcel}>出力</button>
     </div>
     {mode==="single"?(<>
       <select style={S.select} className="no-print" value={itemId??""} onChange={e=>setItemId(Number(e.target.value))}>{items.map(it=><option key={it.id} value={it.id}>{it.name}</option>)}</select>
@@ -2559,6 +2621,10 @@ const S={
   itemFilterHeader:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7},
   itemFilterTitle:{fontSize:12,fontWeight:700,color:"var(--muted)"},
   printBtn:{background:"var(--accent)",color:"#fff",border:"none",borderRadius:9,padding:"6px 12px",fontSize:12.5,fontWeight:700,cursor:"pointer"},
+  exportBar:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",background:"var(--card)",border:"1px solid var(--line)",borderRadius:10,padding:"9px 12px",marginBottom:10},
+  exportLabel:{fontSize:13,fontWeight:700,color:"var(--ink)"},
+  exportDate:{padding:"7px 9px",border:"1px solid var(--line)",borderRadius:8,fontSize:14,background:"#fff",color:"var(--ink)",fontWeight:700},
+  exportBtn:{marginLeft:"auto",background:"var(--ok)",color:"#fff",border:"none",borderRadius:9,padding:"8px 18px",fontSize:13.5,fontWeight:700,cursor:"pointer"},
   itemFilterRow:{display:"flex",flexWrap:"wrap",gap:6},
   itemFilterBtn:{padding:"5px 11px",border:"1px solid var(--line)",background:"#fff",borderRadius:14,fontSize:12.5,fontWeight:700,color:"var(--muted)"},
   itemFilterOn:{background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"},

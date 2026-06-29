@@ -236,6 +236,7 @@ function farmStats(item, fid){
   const fd=item.feedDaily?.[fid];
   let baseDaily=null, source=null;
   if(fd&&fd.dailyKg>0){ baseDaily=fd.dailyKg; source="excel"; }
+  else if(fd&&(fd.removed||fd.dailyKg===0)){ baseDaily=0; source="excel"; } // メニューから外れた餌（基準日以降 使用なし→0）
   else if(last&&prev){
     const days=Math.max(1,Math.round((new Date(last.date)-new Date(prev.date))/86400000));
     const diff=countToKg(item,prev.qtys)-lastKg;
@@ -1992,6 +1993,7 @@ function ExtraFeed({items,onSetExtra}){
 function ExcelImport({items,onApply,onClear,onAddItem}){
   const [importMode,setImportMode]=useState("hirayama"); // hirayama | generic
   const [useRecent,setUseRecent]=useState(true); // true=直近15日平均、false=全期間平均
+  const [menuChangeDate,setMenuChangeDate]=useState(""); // 餌メニュー変更日（基準日）。これ以降の使用日だけで平均する
   const [sheets,setSheets]=useState(null); const [sheetName,setSheetName]=useState("");
   const [farm,setFarm]=useState("a"); const [itemId,setItemId]=useState(items[0]?.id??null);
   const [dateCol,setDateCol]=useState(0); const [kgCol,setKgCol]=useState(1); const [headerRow,setHeaderRow]=useState(true); const [msg,setMsg]=useState("");
@@ -2016,7 +2018,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
     setSheets(null); setSheetName("");
     setHirayamaResults(null); setHirayamaDebug(null);
     setSheetFarmOverride(null); setShowDebug(false);
-    setSelectedTargets({}); setMsg("");
+    setSelectedTargets({}); setMsg(""); setMenuChangeDate("");
   };
 
   // 平山牧場フォーマット解析
@@ -2144,7 +2146,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
         const recentDs=ds.filter(d=>d>=cut);
         const recentTotal=recentDs.reduce((s,d)=>s+daily[d],0);
         const dailyKgRecent=recentDs.length>0?recentTotal/recentDs.length:dailyKgAll;
-        farmRes[name]={dailyKgAll, dailyKgRecent, total, recentTotal, recentDays:recentDs.length, from, to, days:ds.length, rows:ds.length, recentFrom:recentDs[0]||from};
+        farmRes[name]={dailyKgAll, dailyKgRecent, total, recentTotal, recentDays:recentDs.length, from, to, days:ds.length, rows:ds.length, recentFrom:recentDs[0]||from, daily};
       }
       if(Object.keys(farmRes).length>0){ results[farmId]=farmRes; foundAny=true; }
     }
@@ -2160,6 +2162,18 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
     }
     setSelectedTargets(targets);
   }
+
+  // 基準日(メニュー変更日)と直近トグルを反映した実効値を計算。
+  // 基準日以降に使用がある日だけで平均。基準日以降の使用が無い餌は removed=true（＝やめた餌→日量0）。
+  const effInfo=(info)=>{
+    const src=info.daily||{};
+    let ds=Object.keys(src).filter(d=>src[d]>0).sort();
+    if(menuChangeDate) ds=ds.filter(d=>d>=menuChangeDate);
+    if(useRecent&&ds.length){ const last=ds[ds.length-1]; const cut=new Date(new Date(last)-14*86400000).toISOString().slice(0,10); ds=ds.filter(d=>d>=cut); }
+    if(ds.length===0) return {dailyKg:0, removed:true, from:menuChangeDate||info.from, to:info.to, days:0, total:0};
+    const total=ds.reduce((s,d)=>s+src[d],0);
+    return {dailyKg:total/ds.length, removed:false, from:ds[0], to:ds[ds.length-1], days:ds.length, total};
+  };
 
   const applyAll=()=>{
     if(!hirayamaResults) return;
@@ -2188,22 +2202,21 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
       for(const [feedName,info] of Object.entries(feeds)){
         const t=selectedTargets[`${fid}|${feedName}`];
         if(t!=="new"&&t!=="skip"&&t!=null&&typeof t==="number"){
-          const dailyKg=useRecent?info.dailyKgRecent:info.dailyKgAll;
-          const days=useRecent?info.recentDays:info.days;
-          const from=useRecent?info.recentFrom:info.from;
-          // 変動チェック: 既存のfeedDailyと比べて月間使用量が1割以上変わったら警告
+          const eff=effInfo(info);
+          const dailyKg=eff.dailyKg, days=eff.days, from=eff.from;
+          // 変動チェック: 既存のfeedDailyと比べて月間使用量が1割以上変わったら警告（やめた餌=0への変化も警告）
           const targetItem=items.find(i=>i.id===t);
           const prevFd=targetItem?.feedDaily?.[fid];
-          if(prevFd&&prevFd.dailyKg>0&&dailyKg>0){
+          if(prevFd&&prevFd.dailyKg>0&&(dailyKg>0||eff.removed)){
             const prevMonthly=prevFd.dailyKg*30, newMonthly=dailyKg*30;
             const change=(newMonthly-prevMonthly)/prevMonthly;
-            if(Math.abs(change)>=0.10){
+            if(eff.removed||Math.abs(change)>=0.10){
               warns.push({ name:feedName, farm:FARMS.find(f=>f.id===fid)?.name||fid,
                 prevMonthly:Math.round(prevMonthly), newMonthly:Math.round(newMonthly),
-                pct:Math.round(change*100), up:change>0, unit:unitOf(targetItem) });
+                pct:Math.round(change*100), up:change>0, unit:unitOf(targetItem), removed:eff.removed });
             }
           }
-          onApply(t,fid,{dailyKg, from, to:info.to, days, total:useRecent?info.recentTotal:info.total, rows:info.rows});
+          onApply(t,fid,{dailyKg, from, to:info.to, days, total:eff.total, rows:info.rows, removed:eff.removed||undefined});
           n++;
         }
       }
@@ -2338,13 +2351,19 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
         <button style={{...S.modeTab,...(!useRecent?S.modeActive:{})}} onClick={()=>setUseRecent(false)}>全期間の平均</button>
       </div>
       <div style={{...S.miniNote,marginTop:4}}>{useRecent?"直近15日のうち入力のある日だけの平均。未入力の日(0や空欄)は計算から省きます。":"取り込んだ全期間で入力のある日の平均。未入力の日は計算から省きます。"}</div>
+      <div style={S.menuDateBox}>
+        <span style={{fontSize:13,fontWeight:700}}>🍽 餌メニュー変更日</span>
+        <input type="date" style={S.exportDate} value={menuChangeDate} onChange={e=>setMenuChangeDate(e.target.value)}/>
+        {menuChangeDate&&<button style={S.cancelBtn} onClick={()=>setMenuChangeDate("")}>クリア</button>}
+        <div style={{...S.miniNote,flexBasis:"100%",marginTop:4}}>取込直前にメニューを変えた場合、この日を指定すると<b>その日以降の使用分だけ</b>で平均します。指定日以降に使用が無い餌は「やめた餌」として<b>使用量0</b>で反映します。</div>
+      </div>
       {Object.entries(hirayamaResults).map(([fid,feeds])=>(<div key={fid} style={{marginTop:14}}>
         <div style={{fontWeight:700,fontSize:14,marginBottom:6,color:"var(--accent)"}}>{FARMS.find(f=>f.id===fid)?.name}</div>
         {Object.entries(feeds).sort((a,b)=>b[1].total-a[1].total).map(([feedName,info])=>{
-          const key=`${fid}|${feedName}`;
+          const key=`${fid}|${feedName}`; const eff=effInfo(info);
           return (<div key={key} style={S.hyRow}>
-            <div style={S.hyName}>{feedName}</div>
-            <div style={S.hyStat}>1日 <b>{fmt(useRecent?info.dailyKgRecent:info.dailyKgAll)}</b>kg<span style={{color:"var(--muted)"}}>（{useRecent?`直近15日のうち入力${info.recentDays}日`:`入力ありの${info.days}日`} 計{fmt(Math.round(useRecent?info.recentTotal:info.total))}kg）</span></div>
+            <div style={S.hyName}>{feedName}{eff.removed&&<span style={S.removedBadge}>やめた餌→0</span>}</div>
+            <div style={S.hyStat}>{eff.removed?<b style={{color:"var(--bad)"}}>1日 0kg</b>:<>1日 <b>{fmt(eff.dailyKg)}</b>kg</>}<span style={{color:"var(--muted)"}}>（{menuChangeDate?`${menuChangeDate.slice(5).replace("-","/")}以降 `:""}{eff.removed?"使用なし":`入力${eff.days}日 計${fmt(Math.round(eff.total))}kg`}）</span></div>
             <select style={S.hyTarget} value={selectedTargets[key]||"skip"} onChange={e=>{const v=e.target.value; setSelectedTargets(s=>({...s,[key]:(v==="new"||v==="skip")?v:Number(v)}));}}>
               <option value="skip">→ 取込まない（既定）</option>
               <option value="new">→ 新規登録</option>
@@ -2666,6 +2685,8 @@ const S={
   exportBar:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",background:"var(--card)",border:"1px solid var(--line)",borderRadius:10,padding:"9px 12px",marginBottom:10},
   exportLabel:{fontSize:13,fontWeight:700,color:"var(--ink)"},
   exportDate:{padding:"7px 9px",border:"1px solid var(--line)",borderRadius:8,fontSize:14,background:"#fff",color:"var(--ink)",fontWeight:700},
+  menuDateBox:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",background:"rgba(95,125,60,.06)",border:"1px solid rgba(95,125,60,.25)",borderRadius:10,padding:"10px 12px",marginTop:10},
+  removedBadge:{display:"inline-block",fontSize:10,fontWeight:700,color:"#fff",background:"var(--bad)",borderRadius:8,padding:"1px 7px",marginLeft:6,verticalAlign:"middle"},
   exportBtn:{marginLeft:"auto",background:"var(--ok)",color:"#fff",border:"none",borderRadius:9,padding:"8px 18px",fontSize:13.5,fontWeight:700,cursor:"pointer"},
   usageCard:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:12,padding:"12px 14px",marginBottom:11,boxShadow:"0 1px 3px rgba(80,70,40,.05)"},
   usageHead:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap",marginBottom:8},

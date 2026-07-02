@@ -17,11 +17,22 @@ LINEのグループ/個人メッセージを受け取り、棚卸しの記録・
 | `SB_SERVICE_KEY` | Supabase サービスロールキー |
 | `ALLOW_GROUP_ID` | （任意）反応を許可するグループID |
 
-## デプロイ
+## デプロイ（自動）
+`supabase/functions/line-webhook/` を **main に push すると GitHub Actions が自動デプロイ**する。
+初回だけ、リポジトリの Settings > Secrets and variables > Actions に以下を登録すること:
+
+| Secret | 取得場所 |
+|---|---|
+| `SUPABASE_ACCESS_TOKEN` | Supabase > Account > Access Tokens |
+| `SUPABASE_PROJECT_REF` | Supabase > Project Settings > General > Reference ID |
+
+未設定の間は Action は失敗せず「スキップ」する（設定した時点から自動デプロイが有効になる）。
+
+手動デプロイしたい場合:
 ```bash
-supabase functions deploy line-webhook --project-ref <PROJECT_REF>
+supabase functions deploy line-webhook --no-verify-jwt --project-ref <PROJECT_REF>
 ```
-または GitHub Actions の「Deploy line-webhook (Supabase)」を手動実行（`SUPABASE_ACCESS_TOKEN` と `SUPABASE_PROJECT_REF` のSecrets設定が必要）。
+※ LINE からの Webhook は Supabase JWT を持たないため `--no-verify-jwt` が必要。
 
 ## 2026-07 の修正（無反応バグ対策）
 - Claude解析の `max_tokens` を 4096 に引き上げ（長い棚卸しでJSONが途中で切れて解析に失敗するのを防止）。

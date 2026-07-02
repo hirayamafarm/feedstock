@@ -18,6 +18,7 @@
 //   - 返信(reply)が失効/失敗しても push で必ず届くようにフォールバック（無言をやめる）
 //   - 解析失敗・想定外も必ず一言返す
 //   - 棚卸しの重複判定を「同じ月」→「同じ日付」に統一（別日の記録を上書きせず残す）
+//   - DMでも棚卸し可能に（入荷予定/問い合わせに該当しない＝日付なしの数量報告は棚卸しとして処理）
 
 import { createHmac } from "node:crypto";
 
@@ -202,6 +203,7 @@ ${itemLines}
 - 農場が共通在庫の餌で農場指定がなければ farm_id=null でよい。
 - 「6/16 サイレージ 本場 6/20 サイレージ 赤坂」→ order 2件。
 - 「サイレージの予定」「サイレージ どう?」→ query、query_items=["ベトナムｃｓ"]。
+- 【重要】将来の入荷「日付」が無く、餌名＋数量だけの報告（棚卸しの可能性が高い。例「本場 チモシー 26個」「スーダン 24コ」「本場の棚卸し」「はい」）は入荷予定ではないので intent="other" にする（別処理で棚卸しとして扱う）。
 - どちらでもない雑談 → intent="other"。
 JSONのみ返す。`;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -293,10 +295,11 @@ Deno.serve(async (req) => {
       if (!isGroup) {
         const today = jstToday();
         const po = await parseOrderWithClaude(CLAUDE, text, farms, state.items || [], today);
-        if (!po || po.intent === "other") continue; // 雑談は無反応
+        // DMでも棚卸しできるように: 入荷予定 or 在庫問い合わせ ならここで処理して終了。
+        // それ以外(other=日付なしの数量報告など)は「棚卸しかも」→ 下の棚卸し処理へフォールスルー。
 
         // ── 在庫問い合わせ ──
-        if (po.intent === "query" && Array.isArray(po.query_items) && po.query_items.length) {
+        if (po && po.intent === "query" && Array.isArray(po.query_items) && po.query_items.length) {
           const dow = ["日","月","火","水","木","金","土"];
           // 農場ごとの現在庫・残り日数を計算
           const calcFarm = (item, fid) => {
@@ -345,9 +348,8 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        // ── 入荷予定の登録 ──
-        if (po.intent !== "order" || !Array.isArray(po.orders) || !po.orders.length) continue;
-
+        // ── 入荷予定の登録（該当すれば処理して終了。該当しなければ下の棚卸し処理へフォールスルー）──
+        if (po && po.intent === "order" && Array.isArray(po.orders) && po.orders.length) {
         const created = [], errs = [], mapOrders = [];
         let nextOrderId = state.nextOrderId || Date.now();
         const dow = ["日","月","火","水","木","金","土"];
@@ -404,9 +406,11 @@ Deno.serve(async (req) => {
         msg += `\n\n※修正は送信取消で取り消して送り直し、または、アプリで編集できます。`;
         await say(TOKEN, replyToken, srcId, msg.trim());
         continue;
+        } // end 入荷予定の登録
+        // ここに来た＝DMだが入荷予定でも問い合わせでもない → 下の棚卸し処理へ
       }
 
-      // ── 以下はグループ = 棚卸し処理 ──
+      // ── 棚卸し処理（グループは常に／DMは入荷予定・問い合わせ以外のとき） ──
       const p = await parseWithClaude(CLAUDE, text, farms, state.items || []);
       if (p.intent === "other") continue;
 
@@ -571,10 +575,8 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ここまで該当なし（グループで棚卸しとして解釈できなかった等）→ 無言にしない
-      if (isGroup) {
-        await say(TOKEN, replyToken, srcId, "棚卸しとして読み取れませんでした。お手数ですが、1行に1つの餌と数量を書いて送り直してください（例：チモシー 26個 / スーダン 1コンテナ 24個）。");
-      }
+      // ここまで該当なし（棚卸しとして解釈できなかった等）→ 無言にしない
+      await say(TOKEN, replyToken, srcId, "棚卸しとして読み取れませんでした。お手数ですが、1行に1つの餌と数量を書いて送り直してください（例：チモシー 26個 / スーダン 1コンテナ 24個）。");
     } catch (e) {
       console.error("処理エラー:", e?.message || e);
       await say(TOKEN, replyToken, srcId, "⚠️ うまく処理できませんでした。少し時間をおいて、1行に1つの餌・数量を明記して送り直してください。（例：チモシー 26個）\n" + (e?.message ? `詳細: ${e.message}` : ""));

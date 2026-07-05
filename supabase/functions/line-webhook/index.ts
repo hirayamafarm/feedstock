@@ -52,6 +52,23 @@ function farmStats(item, fid) {
 }
 function orderForFarm(o) { return o.forFarm || "shared"; }
 
+// 表記ゆれ(別名)を学習する。安全のため、他の餌と衝突する表記は学習しない。
+// 学習できたら追加した別名文字列を、しなければ null を返す。
+function learnAlias(item, raw, allItems) {
+  if (!item || !raw) return null;
+  const r = String(raw).trim();
+  if (r.length < 2) return null;                                          // 短すぎる表記は危険
+  if (r === item.name) return null;                                       // 正式名そのもの
+  if ((item.lineAliases || []).some(a => a === r)) return null;           // 既に登録済み
+  for (const it of (allItems || [])) {
+    if (it.name === r) return null;                                       // 他の餌の正式名と同じ
+    if (it.id !== item.id && (it.lineAliases || []).includes(r)) return null; // 他の餌の別名と衝突
+  }
+  item.lineAliases = item.lineAliases || [];
+  item.lineAliases.push(r);
+  return r;
+}
+
 function predictKg(item, fid, date) {
   // 直前の棚卸し（日付が前のもの）を基準に予測。※同月でも別日の記録は基準に使える
   const counts = [...(item.counts?.[fid] || [])].sort((a, b) => a.date.localeCompare(b.date)).filter(c => c.date < date);
@@ -145,7 +162,7 @@ ${itemLines}
 {
  "intent": "stocktake" | "set_farm" | "confirm" | "other",
  "farm_id": "a"|"b"|null,
- "items": [ {"item":"正式な餌名","units":[{"unit":"単位名","n":数値}],"uncertain":true|false} ],
+ "items": [ {"item":"正式な餌名","raw":"メッセージに実際に書かれていた餌名（正規化前の元の表記）","units":[{"unit":"単位名","n":数値}],"uncertain":true|false} ],
  "confirm_yes": true|false
 }
 判定ルール:
@@ -161,6 +178,7 @@ ${itemLines}
 - 単位名は必ずその餌が持つ単位ラベルか「kg」を使う。
 - 餌名は正式名に正規化（別名・誤字も。例「いてそだ」「SODA」→「重曹」、「サイレージ」→「ベトナムｃｓ」、「シボウサン」「シボゥサソ」→「脂肪酸カルシウム」、「ミズかバイダ」「ミズかバィダ」→「ミズカバインダー」、「お茶から」「お茶おから」→「おちゃおから」、「ネオナ」「ネオナ-」→「ネオナーリンレッド」）。
 - 餌名が餌リストのどれか確信できない、数量や単位の解釈に自信がない場合は、その項目に "uncertain": true を付ける（勝手に確定させず後で確認する）。明確なものは付けない（省略でよい）。
+- "raw" には、メッセージに書かれていた餌名の表記を「正規化する前のそのままの文字列」で入れる（例: 実際に「ミズかバイダ」と書かれていたら item="ミズカバインダー"、raw="ミズかバイダ"）。表記ゆれの学習に使う。
 - 「塩」「しお」だけで搾乳塩かDRY塩か不明 → item名「塩(要確認)」。
 - 「本場の棚卸し」等の農場宣言だけ → intent="set_farm"、farm_id。
 - 「はい」「OK」等の肯定 → intent="confirm"、confirm_yes=true。
@@ -422,6 +440,7 @@ Deno.serve(async (req) => {
       if (p.intent === "confirm" && p.confirm_yes && session?.pending) {
         const pend = session.pending;
         if (Array.isArray(pend) && pend.length) {
+          const learned = [];
           for (const x of pend) {
             const item = (state.items || []).find(i => i.id === x.item_id); if (!item) continue;
             item.counts = item.counts || {}; item.counts[x.farm_id] = item.counts[x.farm_id] || [];
@@ -430,13 +449,18 @@ Deno.serve(async (req) => {
             const ex = item.counts[x.farm_id].find(c => c.date === date);
             // x.qtys は既存＋新規を合算済み。今日の記録があれば置換、なければ追加。
             if (ex) { ex.qtys = x.qtys; } else item.counts[x.farm_id].push({ date, qtys: x.qtys });
+            // 「はい」で確定した＝表記が正しかった → 表記ゆれを学習
+            const a = learnAlias(item, x.raw, state.items || []);
+            if (a) learned.push(`${a}→${item.name}`);
           }
           await fetch(`${SB_URL}/rest/v1/app_state?id=eq.${STATE_ID}`, {
             method: "PATCH", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
             body: JSON.stringify({ data: state, updated_at: new Date().toISOString() }),
           });
           await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: null, updated_at: new Date().toISOString() });
-          await say(TOKEN, replyToken, srcId, "✅ 確認分を記録しました：\n" + pend.map(x => `・${x.farmName} ${x.name}: ${x.unitLabel}`).join("\n"));
+          let cmsg = "✅ 確認分を記録しました：\n" + pend.map(x => `・${x.farmName} ${x.name}: ${x.unitLabel}`).join("\n");
+          if (learned.length) cmsg += `\n\n📝 表記ゆれを記憶しました（次回から自動認識）\n` + learned.map(l => `・${l}`).join("\n");
+          await say(TOKEN, replyToken, srcId, cmsg);
         } else {
           await say(TOKEN, replyToken, srcId, "確認待ちの項目がありませんでした。");
         }
@@ -462,7 +486,7 @@ Deno.serve(async (req) => {
 
         const farm = findFarm(farmId);
         const date = jstToday();
-        const recorded = [], pending = [], errors = [];
+        const recorded = [], pending = [], errors = [], learned = [];
 
         // ヘルパ: 餌の単位ラベル→unit定義
         const findUnit = (item, unitName) => {
@@ -548,10 +572,14 @@ Deno.serve(async (req) => {
             pending.push({
               farm_id: farmId, item_id: item.id, qtys: mergedQtys, kg: qtysToKg(item, mergedQtys),
               name: item.name, farmName: farm?.name, unitLabel: qtysLabel(item, mergedQtys), predKg, reason,
+              raw: row.raw || null,
             });
           } else {
             item.counts[farmId].push({ date, qtys });
             recorded.push({ name: item.name, unitLabel: label });
+            // 表記ゆれを学習（明確に記録できたものだけ）
+            const a = learnAlias(item, row.raw, state.items || []);
+            if (a) learned.push(`${a}→${item.name}`);
           }
         }
 
@@ -577,6 +605,7 @@ Deno.serve(async (req) => {
           msg += `\n\nこの内容で記録するなら「はい」と送ってください。`;
         }
         if (errors.length) { msg += `\n\n❌ ${errors.join(" / ")}`; }
+        if (learned.length) { msg += `\n\n📝 表記ゆれを記憶しました（次回から自動認識）\n` + learned.map(l => `・${l}`).join("\n"); }
         await say(TOKEN, replyToken, srcId, msg.trim());
         continue;
       }

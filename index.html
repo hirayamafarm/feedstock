@@ -1994,13 +1994,14 @@ function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
               const isToday=dobj.iso===todayStr;
               const isMonthStart=dobj.d===1||idx===0; // 月初 or 先頭
               const rowBg=dobj.dow===0?"rgba(168,73,47,.05)":dobj.dow===6?"rgba(58,110,165,.05)":"#fff";
-              const dateBg=dobj.dow===0?"rgba(168,73,47,.13)":dobj.dow===6?"rgba(58,110,165,.13)":"#fbf8ef";
+              // 固定列(sticky)なので背景は必ず不透明に（横スクロール時に数字が透けて重なるのを防ぐ）
+              const dateBg=dobj.dow===0?"#f0e1d6":dobj.dow===6?"#e2e6e5":"#fbf8ef";
               const dateCol=dobj.dow===0?"var(--bad)":dobj.dow===6?"#3a6ea5":"var(--ink)";
               // 月の変わり目には区切り行を入れる
               return (<React.Fragment key={dobj.iso}>
                 {isMonthStart&&idx!==0&&(<tr><td colSpan={colSims.length+1} style={S.vtMonthDivider}>{dobj.y}年{dobj.m}月</td></tr>)}
                 <tr style={{background:isToday?"rgba(95,125,60,.08)":rowBg}}>
-                  <td style={{...S.vtDate,background:isToday?"rgba(95,125,60,.2)":dateBg,color:dateCol,fontWeight:isToday?900:700,boxShadow:isToday?"inset 0 0 0 2px var(--accent)":"none"}}>
+                  <td style={{...S.vtDate,background:isToday?"#dcdfcb":dateBg,color:dateCol,fontWeight:isToday?900:700,boxShadow:isToday?"inset 0 0 0 2px var(--accent)":"none"}}>
                     {isMonthStart?`${dobj.m}/${dobj.d}`:dobj.d}{isToday&&<span style={S.vtTodayTag}>今日</span>}
                   </td>
                   {colSims.map(c=>renderCell(c,dobj))}

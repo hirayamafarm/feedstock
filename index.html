@@ -154,6 +154,11 @@ function farmColor(fid){
 }
 
 function unitOf(item){ return item?.unitType==="piece"?"個":"kg"; }
+// 入荷予定が「コンテナ」かどうかの推定。餌に「コンテナ」を含む単位があり、その量の9割以上ならコンテナ扱い。
+function isContainerOrder(item,o){
+  const cu=(item?.units||[]).find(u=>/コンテナ/.test(u.label||""));
+  return !!(cu&&cu.kg>0&&o.kg>=cu.kg*0.9);
+}
 
 // ── 外部カレンダー連携 ─────────────────────────────
 function dateToICS(dateStr){ return dateStr.replace(/-/g,""); }
@@ -477,6 +482,74 @@ function canEdit(role, desc){
   return false; // viewer
 }
 
+// ── 入荷予定カレンダー（月グリッド） ──────────
+function IncomingCalendarView({items,onSelect}){
+  const [month,setMonth]=useState(thisMonth());
+  const [Y,M]=month.split("-").map(Number);
+  const shift=(d)=>{ let y=Y,m=M+d; if(m<1){m=12;y--;} if(m>12){m=1;y++;} setMonth(`${y}-${String(m).padStart(2,"0")}`); };
+  // 入荷予定を日付ごとに集約
+  const byDate={};
+  for(const it of items){
+    for(const o of (it.orders||[])){
+      if(!o.etaDate) continue;
+      (byDate[o.etaDate]=byDate[o.etaDate]||[]).push({
+        farm:o.forFarm||"shared", name:it.name, kg:o.kg, unit:unitOf(it),
+        received:!!o.received, container:isContainerOrder(it,o), itemId:it.id,
+      });
+    }
+  }
+  const dim=daysInMonth(Y,M);
+  const firstDow=new Date(Y,M-1,1).getDay();
+  const cells=[];
+  for(let i=0;i<firstDow;i++) cells.push(null);
+  for(let d=1;d<=dim;d++) cells.push(d);
+  while(cells.length%7!==0) cells.push(null);
+  const weeks=[]; for(let i=0;i<cells.length;i+=7) weeks.push(cells.slice(i,i+7));
+  const todayIso=today();
+  const farmShort=(fid)=> fid==="shared"?"共通":(FARMS.find(f=>f.id===fid)?.name||fid).replace("分場","");
+  const monthCount=Object.entries(byDate).filter(([d])=>d.slice(0,7)===month).reduce((s,[,a])=>s+a.length,0);
+  return (<div style={S.fade}>
+    <div style={S.icalHead} className="no-print">
+      <button style={S.calNav} onClick={()=>shift(-1)}>‹</button>
+      <span style={S.icalTitle}>{Y}年{M}月 入荷予定</span>
+      <button style={S.calNav} onClick={()=>shift(1)}>›</button>
+    </div>
+    <div style={S.icalDowRow}>
+      {["日","月","火","水","木","金","土"].map((w,i)=>(
+        <div key={i} style={{...S.icalDow,color:i===0?"var(--bad)":i===6?"#3a6ea5":"var(--muted)"}}>{w}</div>
+      ))}
+    </div>
+    {weeks.map((wk,wi)=>(<div key={wi} style={S.icalWeek}>
+      {wk.map((d,di)=>{
+        if(d==null) return <div key={di} style={S.icalCellEmpty}/>;
+        const dIso=iso(Y,M,d);
+        const evs=byDate[dIso]||[];
+        const isToday=dIso===todayIso;
+        const dow=(firstDow+d-1)%7;
+        return (<div key={di} style={{...S.icalCell,...(isToday?S.icalCellToday:{})}}>
+          <div style={{...S.icalDayNum,color:dow===0?"var(--bad)":dow===6?"#3a6ea5":"var(--ink)"}}>{d}</div>
+          {evs.map((e,ei)=>{
+            const fc=e.farm==="shared"?{accent:"var(--accent)",tag:"rgba(95,125,60,.18)"}:farmColor(e.farm);
+            const pill=e.container?{background:fc.accent,color:"#fff"}:{background:fc.tag,color:fc.accent};
+            return (<button key={ei}
+              style={{...S.icalPill,...pill,...(e.received?{opacity:0.5,textDecoration:"line-through"}:{})}}
+              onClick={()=>onSelect(e.itemId)}
+              title={`${farmShort(e.farm)} ${e.name}／${fmt(e.kg)}${e.unit}${e.container?"・コンテナ":""}${e.received?"・✓入荷済":"・未入荷"}`}>
+              {farmShort(e.farm)}{e.name}
+            </button>);
+          })}
+        </div>);
+      })}
+    </div>))}
+    {monthCount===0&&<div style={S.empty}>この月の入荷予定はありません。</div>}
+    <div style={S.icalLegend}>
+      <div style={S.icalLegendRow}><span style={{...S.icalLegendChip,background:farmColor("a").tag,color:farmColor("a").accent}}>本場</span><span style={{...S.icalLegendChip,background:farmColor("b").tag,color:farmColor("b").accent}}>赤坂</span><span style={{...S.icalLegendChip,background:"rgba(95,125,60,.18)",color:"var(--accent)"}}>共通</span><span style={S.icalLegendNote}>色＝入荷場所</span></div>
+      <div style={S.icalLegendRow}><span style={{...S.icalLegendChip,background:farmColor("a").accent,color:"#fff"}}>濃い＝コンテナ</span><span style={{...S.icalLegendChip,background:farmColor("a").tag,color:farmColor("a").accent}}>薄い＝それ以外</span></div>
+      <div style={S.icalLegendNote}>取消線＝入荷済み。タップで餌の詳細へ。</div>
+    </div>
+  </div>);
+}
+
 // ── 使用量一覧（餌ごと・農場別の日/月使用量） ──────────
 function UsageView({items,onSelect}){
   const sorted=[...items].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
@@ -524,6 +597,7 @@ function NavIcon({name,size=27}){
     order:<g><path d="M6 8h12l-1 12H7L6 8z"/><path d="M9 8a3 3 0 0 1 6 0"/></g>,
     inventory:<g><rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M8.5 11h7M8.5 15h7"/></g>,
     calendar:<g><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M4 9.5h16M8 3v4M16 3v4"/></g>,
+    incoming:<g><path d="M3 7h10v8H3z"/><path d="M13 10h4l3 3v2h-7z"/><circle cx="7" cy="17" r="1.7"/><circle cx="17" cy="17" r="1.7"/></g>,
     usage:<g><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-6"/></g>,
     more:<path d="M4 7h16M4 12h16M4 17h16"/>,
     diff:<path d="M3 20h18M6 20V11M12 20V5M18 20v-6"/>,
@@ -536,8 +610,8 @@ function NavIcon({name,size=27}){
 // ── メイン ──────────────────────────────────────
 function App(){
   const [state,setState]=useState(null);
-  const [view,setView]=useState("order");
-  const [prevView,setPrevView]=useState("order"); // detail に来る前の画面
+  const [view,setView]=useState("incoming"); // 最初に開く画面＝入荷予定カレンダー
+  const [prevView,setPrevView]=useState("incoming"); // detail に来る前の画面
   const [moreOpen,setMoreOpen]=useState(false); // 下タブの「その他」メニュー
   const [selId,setSelId]=useState(null);
   const [sync,setSync]=useState("loading");
@@ -721,7 +795,8 @@ function App(){
         })()}
       </header>
       <main style={S.main}>
-        {(view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings") && (<>
+        {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings") && (<>
+          {view==="incoming"&&<IncomingCalendarView items={state.items} onSelect={id=>{setSelId(id);setPrevView("incoming");setView("detail");}}/>}
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items}/>}
@@ -737,20 +812,20 @@ function App(){
         {view==="edit"&&sel&&<EditView item={sel} onSave={(patch)=>{editItem(sel.id,patch);setView("detail");}} onCancel={()=>setView("detail")}/>}
         {view==="add"&&<AddView onSave={it=>{addItem(it);setView("inventory");}} onCancel={()=>setView("inventory")}/>}
       </main>
-      {(view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings")&&(
+      {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings")&&(
         <nav style={S.bottomNav} className="no-print">
-          {[{id:"order",icon:"order",label:"発注"},{id:"inventory",icon:"inventory",label:"棚卸し"},{id:"calendar",icon:"calendar",label:"カレンダー"},{id:"usage",icon:"usage",label:"使用量"}].map(t=>(
+          {[{id:"incoming",icon:"incoming",label:"入荷"},{id:"order",icon:"order",label:"発注"},{id:"inventory",icon:"inventory",label:"棚卸し"},{id:"calendar",icon:"calendar",label:"カレンダー"}].map(t=>(
             <button key={t.id} style={{...S.bnItem,...(view===t.id?S.bnActive:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
               <span style={S.bnIcon}><NavIcon name={t.icon}/></span><span style={S.bnLabel}>{t.label}</span>
             </button>
           ))}
-          <button style={{...S.bnItem,...((["diff","data","settings"].includes(view)||moreOpen)?S.bnActive:{})}} onClick={()=>setMoreOpen(o=>!o)}>
+          <button style={{...S.bnItem,...((["usage","diff","data","settings"].includes(view)||moreOpen)?S.bnActive:{})}} onClick={()=>setMoreOpen(o=>!o)}>
             <span style={S.bnIcon}><NavIcon name="more"/></span><span style={S.bnLabel}>その他</span>
           </button>
           {moreOpen&&(<>
             <div style={S.menuOverlay} onClick={()=>setMoreOpen(false)}/>
             <div style={S.bnMore}>
-              {[{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
+              {[{id:"usage",icon:"usage",label:"使用量"},{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
                 <button key={t.id} style={{...S.bnMoreItem,...(view===t.id?{color:"var(--accent)"}:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
                   <NavIcon name={t.icon} size={20}/> {t.label}
                 </button>
@@ -2666,6 +2741,20 @@ const S={
   calHead:{display:"flex",alignItems:"center",justifyContent:"space-between",margin:"14px 0 10px"},
   calNav:{width:40,height:40,border:"1px solid var(--line)",background:"var(--card)",borderRadius:10,fontSize:22,color:"var(--accent)",fontWeight:700},
   calTitle:{fontFamily:"'Zen Maru Gothic',sans-serif",fontWeight:700,fontSize:18},
+  icalHead:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,margin:"2px 0 10px"},
+  icalTitle:{fontFamily:"'Zen Maru Gothic',sans-serif",fontWeight:700,fontSize:18},
+  icalDowRow:{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:3,marginBottom:3},
+  icalDow:{textAlign:"center",fontSize:11,fontWeight:700,padding:"2px 0"},
+  icalWeek:{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:3,marginBottom:3},
+  icalCell:{minHeight:70,background:"var(--card)",border:"1px solid var(--line)",borderRadius:7,padding:"2px 2px 3px",overflow:"hidden",minWidth:0},
+  icalCellEmpty:{minHeight:70,background:"transparent"},
+  icalCellToday:{outline:"2px solid var(--accent)",outlineOffset:-1},
+  icalDayNum:{fontSize:11,fontWeight:700,lineHeight:1.2,padding:"0 2px 2px",textAlign:"left"},
+  icalPill:{display:"block",width:"100%",minWidth:0,border:"none",borderRadius:4,padding:"2px 4px",marginBottom:2,fontSize:9.5,fontWeight:700,lineHeight:1.25,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"pointer"},
+  icalLegend:{marginTop:12,padding:"10px 12px",background:"var(--card)",border:"1px solid var(--line)",borderRadius:10,display:"flex",flexDirection:"column",gap:6},
+  icalLegendRow:{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"},
+  icalLegendChip:{fontSize:11,fontWeight:700,borderRadius:5,padding:"2px 8px"},
+  icalLegendNote:{fontSize:11.5,color:"var(--muted)"},
   weekRow:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:4},
   weekCell:{textAlign:"center",fontSize:12,fontWeight:700,padding:"2px 0"},
   calGrid:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4},

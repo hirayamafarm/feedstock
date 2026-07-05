@@ -33,6 +33,13 @@ const jstToday = () => jstNow().toISOString().slice(0, 10);
 const ym = (d) => d.slice(0, 7);
 const fmt = (n) => (n == null || isNaN(n)) ? "—" : Math.round(n).toLocaleString("ja-JP");
 const daysBetween = (a, b) => Math.max(0, Math.round((new Date(b) - new Date(a)) / 86400000));
+// 予想在庫との差異を1行で表す
+const diffLine = (kg, pred) => {
+  if (pred == null) return "";
+  const d = Math.round(kg - pred); const sign = d >= 0 ? "+" : "";
+  const pct = pred > 0 ? `・${sign}${Math.round(d / pred * 100)}%` : "";
+  return `\n  └ 予想${fmt(pred)}kg／実測${fmt(kg)}kg／差${sign}${fmt(d)}kg${pct}`;
+};
 
 function countToKg(item, q) {
   if (!q) return 0;
@@ -458,7 +465,7 @@ Deno.serve(async (req) => {
             body: JSON.stringify({ data: state, updated_at: new Date().toISOString() }),
           });
           await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: null, updated_at: new Date().toISOString() });
-          let cmsg = "✅ 確認分を記録しました：\n" + pend.map(x => `・${x.farmName} ${x.name}: ${x.unitLabel}`).join("\n");
+          let cmsg = "✅ 確認分を記録しました：\n" + pend.map(x => `・${x.farmName} ${x.name}: ${x.unitLabel}` + diffLine(x.kg, x.predKg)).join("\n");
           if (learned.length) cmsg += `\n\n📝 表記ゆれを記憶しました（次回から自動認識）\n` + learned.map(l => `・${l}`).join("\n");
           await say(TOKEN, replyToken, srcId, cmsg);
         } else {
@@ -554,14 +561,14 @@ Deno.serve(async (req) => {
           //  (2) 今日すでに記録あり（別送信の追加）
           //  (3) ズレ大（excludeFromPlan以外）
           let needConfirm = false, reason = "", predKg = null;
+          const predShow = item.excludeFromPlan ? null : predictKg(item, farmId, date); // 予想在庫（差異表示用）
           if (row.uncertain) { needConfirm = true; reason = "読み取りに自信がありません（餌名/数量を確認）"; }
           if (dupUnit) { needConfirm = true; reason = "同じ単位が複数回ありました"; }
           if (existing) { needConfirm = true; reason = `今日すでに記録あり（${qtysLabel(item, existing.qtys)}＝${fmt(existingKg)}kg）。追加で合算します`; }
-          if (!item.excludeFromPlan) {
-            const pred = predictKg(item, farmId, date);
+          if (predShow != null && predShow > 0) {
             const checkKg = existing ? existingKg + kg : kg;
-            if (pred != null && pred > 0 && (checkKg <= pred * DISCREPANCY_LOW || checkKg >= pred * DISCREPANCY_HIGH)) {
-              needConfirm = true; predKg = pred; if (!reason) reason = "予想と差が大きい";
+            if (checkKg <= predShow * DISCREPANCY_LOW || checkKg >= predShow * DISCREPANCY_HIGH) {
+              needConfirm = true; predKg = predShow; if (!reason) reason = "予想と差が大きい";
             }
           }
 
@@ -571,12 +578,12 @@ Deno.serve(async (req) => {
             for (const k in qtys) mergedQtys[k] = (mergedQtys[k] || 0) + qtys[k];
             pending.push({
               farm_id: farmId, item_id: item.id, qtys: mergedQtys, kg: qtysToKg(item, mergedQtys),
-              name: item.name, farmName: farm?.name, unitLabel: qtysLabel(item, mergedQtys), predKg, reason,
+              name: item.name, farmName: farm?.name, unitLabel: qtysLabel(item, mergedQtys), predKg: predShow, reason,
               raw: row.raw || null,
             });
           } else {
             item.counts[farmId].push({ date, qtys });
-            recorded.push({ name: item.name, unitLabel: label });
+            recorded.push({ name: item.name, unitLabel: label, kg, pred: predShow });
             // 表記ゆれを学習（明確に記録できたものだけ）
             const a = learnAlias(item, row.raw, state.items || []);
             if (a) learned.push(`${a}→${item.name}`);
@@ -594,12 +601,12 @@ Deno.serve(async (req) => {
         }
 
         let msg = `【${farm?.name}の棚卸し】\n`;
-        if (recorded.length) { msg += `✅ 記録（${recorded.length}件）\n` + recorded.map(r => `・${r.name}: ${r.unitLabel}`).join("\n") + "\n"; }
+        if (recorded.length) { msg += `✅ 記録（${recorded.length}件）\n` + recorded.map(r => `・${r.name}: ${r.unitLabel}` + diffLine(r.kg, r.pred)).join("\n") + "\n"; }
         if (pending.length) {
           msg += `\n⚠️ 確認が必要な項目\n` + pending.map(x => {
             let line = `・${x.name}: ${x.unitLabel}`;
-            if (x.predKg != null) line += `（予想 約${fmt(x.predKg)}kg）`;
             if (x.reason) line += `\n  └ ${x.reason}`;
+            line += diffLine(x.kg, x.predKg);
             return line;
           }).join("\n");
           msg += `\n\nこの内容で記録するなら「はい」と送ってください。`;

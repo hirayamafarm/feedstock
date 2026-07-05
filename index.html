@@ -165,6 +165,22 @@ function hexToRgba(hex,a){
   const r=parseInt(n.slice(0,2),16)||0, g=parseInt(n.slice(2,4),16)||0, b=parseInt(n.slice(4,6),16)||0;
   return `rgba(${r},${g},${b},${a})`;
 }
+// 指定日の予想在庫(kg)。直前の棚卸しを起点に、消費見込みを引き入荷を足す。前回記録が無ければnull。
+function predictStockAt(item,fid,date){
+  if(!item) return null;
+  const counts=[...(item.counts?.[fid]||[])].sort((a,b)=>a.date.localeCompare(b.date)).filter(c=>c.date<date);
+  if(counts.length===0) return null;
+  const last=counts[counts.length-1];
+  const dailyKg=farmStats(item,fid).dailyKg||0;
+  const days=Math.max(0,Math.round((new Date(date)-new Date(last.date))/86400000));
+  let arrival=0;
+  for(const o of (item.orders||[])){ if(o.etaDate>last.date&&o.etaDate<=date){
+    let share=1;
+    if((item.farms||[]).length>1){ let total=0,mine=0; for(const ff of item.farms){ const u=farmStats(item,ff).usage||0; total+=u; if(ff===fid) mine=u; } share=total>0?mine/total:1/item.farms.length; }
+    arrival+=o.kg*share;
+  } }
+  return Math.max(0, countToKg(item,last.qtys) - dailyKg*days + arrival);
+}
 
 // ── 外部カレンダー連携 ─────────────────────────────
 function dateToICS(dateStr){ return dateStr.replace(/-/g,""); }
@@ -722,23 +738,7 @@ function App(){
   const saveCount=(id,fid,date,qtys)=>{
     // 棚卸し前の状態で予測残量を計算し、差分を記録
     const it=state.items.find(i=>i.id===id);
-    let pred=null;
-    if(it){
-      const counts=[...(it.counts?.[fid]||[])].sort((a,b)=>a.date.localeCompare(b.date)).filter(c=>c.date<date);
-      if(counts.length>0){
-        const last=counts[counts.length-1];
-        const fs=farmStats(it,fid); const dailyKg=fs.dailyKg||0;
-        const days=Math.max(0,Math.round((new Date(date)-new Date(last.date))/86400000));
-        let arrival=0;
-        for(const o of (it.orders||[])){ if(o.etaDate>last.date&&o.etaDate<=date){
-          // 農場別に按分（消費比）
-          let share=1;
-          if(it.farms.length>1){ let total=0,mine=0; for(const ff of it.farms){ const u=farmStats(it,ff).usage||0; total+=u; if(ff===fid) mine=u; } share=total>0?mine/total:1/it.farms.length; }
-          arrival+=o.kg*share;
-        } }
-        pred=Math.max(0, countToKg(it,last.qtys) - dailyKg*days + arrival);
-      }
-    }
+    const pred=predictStockAt(it,fid,date);
     update(s=>{
       const it2=s.items.find(i=>i.id===id); it2.counts=it2.counts||{}; it2.counts[fid]=it2.counts[fid]||[];
       // 同じ日付の記録だけ上書き（修正用）。別の日の記録（同じ月でも）はすべて残す。
@@ -1594,6 +1594,13 @@ function InventoryView({items,onSave,onAdd,onSelect,role}){
             <input style={S.unitInput} type="number" inputMode="decimal" placeholder="0" value={vals[it.id]?.[x.id]??""} onChange={e=>setQty(it.id,x.id,e.target.value)}/></div>))}</div>
         )}
         <div style={S.invKg}>合計 {fmt(live)} {u}</div>
+        {(()=>{ const pred=predictStockAt(it,farm,date); if(pred==null) return null;
+          const hasInput=m==="kg"?(kgVals[it.id]!==undefined&&kgVals[it.id]!==""):Object.values(vals[it.id]||{}).some(v=>v!==undefined&&v!=="");
+          const diff=live-pred; const pct=pred>0?Math.round(diff/pred*100):null;
+          const big=pred>0&&(live<=pred*0.5||live>=pred*2);
+          const col=!hasInput?"var(--muted)":big?"var(--bad)":(Math.abs(pct||0)>=15?"var(--warn)":"var(--ok)");
+          return (<div style={{...S.invPred,color:col}}>予想 {fmt(pred)}{u}{hasInput&&<> ／ 差 {diff>=0?"+":""}{fmt(diff)}{u}{pct!=null?`（${diff>=0?"+":""}${pct}%）`:""}{big?" ⚠️":""}</>}</div>);
+        })()}
       </div>); })}
     <button style={S.primaryBtn} onClick={save}>この農場の棚卸しを保存</button>
     <button style={S.ghostBtn} onClick={onAdd}>＋ 餌を追加</button>
@@ -2744,6 +2751,7 @@ const S={
   unitKg:{color:"var(--accent)",fontWeight:700},
   unitInput:{width:"100%",padding:"8px 10px",border:"1px solid var(--line)",borderRadius:9,fontSize:16,textAlign:"right",background:"#fff",color:"var(--ink)"},
   invKg:{textAlign:"right",fontWeight:700,fontSize:14,marginTop:8,color:"var(--accent)"},
+  invPred:{textAlign:"right",fontWeight:700,fontSize:12.5,marginTop:3},
   primaryBtn:{width:"100%",padding:"12px",background:"var(--accent)",color:"#fff",border:"none",borderRadius:11,fontSize:15,fontWeight:700,marginTop:4},
   ghostBtn:{width:"100%",padding:"11px",background:"transparent",color:"var(--accent)",border:"1px solid var(--accent)",borderRadius:11,fontSize:14,fontWeight:700,marginTop:9},
   smallGhost:{background:"transparent",color:"var(--accent)",border:"1px dashed var(--accent)",borderRadius:9,padding:"8px 12px",fontSize:13,fontWeight:700},

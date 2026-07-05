@@ -531,18 +531,6 @@ function IncomingCalendarView({items,colors,onSetColor}){
       <span style={S.icalTitle}>{Y}年{M}月 入荷予定</span>
       <button style={S.calNav} onClick={()=>shift(1)}>›</button>
     </div>
-    <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}} className="no-print">
-      <button style={{...S.icalColorBtn,...(showColors?{background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"}:{})}} onClick={()=>setShowColors(v=>!v)}>🎨 色設定</button>
-    </div>
-    {showColors&&(<div style={S.icalColorPanel} className="no-print">
-      <div style={{...S.icalLegendNote,marginBottom:4}}>入荷場所ごとに色を設定できます。濃い塗り＝コンテナ、薄い塗り＝それ以外。</div>
-      {farmList.map(f=>(<div key={f.id} style={S.icalColorRow}>
-        <input type="color" value={colorFor(f.id)} onChange={e=>onSetColor(f.id,e.target.value)} style={S.icalColorInput}/>
-        <span style={S.icalColorName}>{f.name}</span>
-        <span style={{...S.icalPill,background:colorFor(f.id),color:"#fff",width:"auto",margin:0}}>コンテナ例</span>
-        <span style={{...S.icalPill,background:hexToRgba(colorFor(f.id),.18),color:colorFor(f.id),width:"auto",margin:0}}>それ以外</span>
-      </div>))}
-    </div>)}
     <div style={S.icalDowRow}>
       {wd.map((w,i)=>(<div key={i} style={{...S.icalDow,color:i===0?"var(--bad)":i===6?"#3a6ea5":"var(--muted)"}}>{w}</div>))}
     </div>
@@ -569,6 +557,18 @@ function IncomingCalendarView({items,colors,onSetColor}){
       <div style={S.icalLegendRow}>{farmList.map(f=>(<span key={f.id} style={{...S.icalLegendChip,background:hexToRgba(colorFor(f.id),.18),color:colorFor(f.id)}}>{f.name}</span>))}<span style={S.icalLegendNote}>色＝入荷場所</span></div>
       <div style={S.icalLegendNote}>濃い塗り＝コンテナ／薄い塗り＝それ以外。取消線＝入荷済み。日付をタップでその日の一覧。</div>
     </div>
+    <div style={{display:"flex",justifyContent:"flex-end",margin:"10px 0"}} className="no-print">
+      <button style={{...S.icalColorBtn,...(showColors?{background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"}:{})}} onClick={()=>setShowColors(v=>!v)}>🎨 色設定</button>
+    </div>
+    {showColors&&(<div style={S.icalColorPanel} className="no-print">
+      <div style={{...S.icalLegendNote,marginBottom:4}}>入荷場所ごとに色を設定できます。濃い塗り＝コンテナ、薄い塗り＝それ以外。</div>
+      {farmList.map(f=>(<div key={f.id} style={S.icalColorRow}>
+        <input type="color" value={colorFor(f.id)} onChange={e=>onSetColor(f.id,e.target.value)} style={S.icalColorInput}/>
+        <span style={S.icalColorName}>{f.name}</span>
+        <span style={{...S.icalPill,background:colorFor(f.id),color:"#fff",width:"auto",margin:0}}>コンテナ例</span>
+        <span style={{...S.icalPill,background:hexToRgba(colorFor(f.id),.18),color:colorFor(f.id),width:"auto",margin:0}}>それ以外</span>
+      </div>))}
+    </div>)}
     {selDay&&(<>
       <div style={S.icalModalOverlay} onClick={()=>setSelDay(null)}/>
       <div style={S.icalModal}>
@@ -2786,11 +2786,11 @@ const S={
   icalDow:{textAlign:"center",fontSize:11,fontWeight:700,padding:"2px 0"},
   icalGrid:{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:1,background:"var(--line)",border:"1px solid var(--line)",borderRadius:8,overflow:"hidden"},
   icalWeek:{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:3,marginBottom:3},
-  icalCell:{display:"block",width:"100%",minHeight:76,background:"var(--card)",border:"none",borderRadius:0,padding:"1px 1px 2px",overflow:"hidden",minWidth:0,textAlign:"left",font:"inherit",color:"inherit",cursor:"pointer"},
+  icalCell:{position:"relative",display:"block",width:"100%",minHeight:76,background:"var(--card)",border:"none",borderRadius:0,padding:"15px 1px 2px",overflow:"hidden",minWidth:0,textAlign:"left",font:"inherit",color:"inherit",cursor:"pointer"},
   icalCellEmpty:{minHeight:76,background:"var(--card)"},
   icalCellOut:{background:"rgba(120,110,80,.09)"},
   icalCellToday:{boxShadow:"inset 0 0 0 2px var(--accent)"},
-  icalDayNum:{fontSize:11,fontWeight:700,lineHeight:1.15,padding:"1px 2px 2px",textAlign:"left"},
+  icalDayNum:{position:"absolute",top:1,left:3,fontSize:11,fontWeight:700,lineHeight:1,textAlign:"left"},
   icalPill:{display:"block",width:"100%",minWidth:0,border:"none",borderRadius:3,padding:"1px 2px",marginBottom:1,fontSize:10,fontWeight:700,letterSpacing:"-0.2px",lineHeight:1.3,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden"},
   icalColorBtn:{border:"1px solid var(--line)",background:"var(--card)",borderRadius:9,padding:"7px 14px",fontSize:13,fontWeight:700,color:"var(--ink)",cursor:"pointer"},
   icalColorPanel:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:10,padding:"10px 12px",marginBottom:10,display:"flex",flexDirection:"column",gap:8},

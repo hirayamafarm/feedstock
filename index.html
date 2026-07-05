@@ -511,6 +511,8 @@ function IncomingCalendarView({items,colors,onSetColor}){
   const [month,setMonth]=useState(defaultMonth());
   const [selDay,setSelDay]=useState(null);   // クリックした日(iso)
   const [showColors,setShowColors]=useState(false);
+  const [farmFilter,setFarmFilter]=useState("all"); // 表示する拠点（デフォルト全部）
+  const showEv=(e)=> farmFilter==="all"||e.farm===farmFilter;
   const [Y,M]=month.split("-").map(Number);
   const shift=(d)=>{ let y=Y,m=M+d; if(m<1){m=12;y--;} if(m>12){m=1;y++;} setMonth(`${y}-${String(m).padStart(2,"0")}`); };
   const colorFor=(farm)=> (colors&&colors[farm]) || (farm==="shared"?"#6b8f3a":farmColor(farm).accent);
@@ -536,11 +538,11 @@ function IncomingCalendarView({items,colors,onSetColor}){
   for(let i=0;i<totalCells;i++){ const dt=new Date(gridStart); dt.setDate(gridStart.getDate()+i);
     cells.push({iso:iso(dt.getFullYear(),dt.getMonth()+1,dt.getDate()), day:dt.getDate(), inMonth:dt.getMonth()===M-1}); }
   const todayIso=today();
-  const monthCount=cells.reduce((s,c)=>s+((byDate[c.iso]||[]).length),0);
+  const monthCount=cells.reduce((s,c)=>s+((byDate[c.iso]||[]).filter(showEv).length),0);
   const farmList=[...FARMS.map(f=>({id:f.id,name:f.name})),{id:"shared",name:"共通"}];
   const wd=["日","月","火","水","木","金","土"];
   const dayTitle=(diso)=>{ const dt=new Date(diso+"T00:00:00"); return `${dt.getMonth()+1}月${dt.getDate()}日(${wd[dt.getDay()]})`; };
-  const selEvents=selDay?(byDate[selDay]||[]):[];
+  const selEvents=selDay?(byDate[selDay]||[]).filter(showEv):[];
   return (<div style={S.fade}>
     <div style={S.icalHead} className="no-print">
       <button style={S.calNav} onClick={()=>shift(-1)}>‹</button>
@@ -553,7 +555,7 @@ function IncomingCalendarView({items,colors,onSetColor}){
     <div style={S.icalGrid}>
       {cells.map((cell,di)=>{
         const dIso=cell.iso;
-        const evs=byDate[dIso]||[];
+        const evs=(byDate[dIso]||[]).filter(showEv);
         const isToday=dIso===todayIso;
         const dow=di%7;
         const numCol=!cell.inMonth?"var(--muted)":(dow===0?"var(--bad)":dow===6?"#3a6ea5":"var(--ink)");
@@ -569,6 +571,14 @@ function IncomingCalendarView({items,colors,onSetColor}){
       })}
     </div>
     {monthCount===0&&<div style={S.empty}>この月の入荷予定はありません。</div>}
+    <div style={{marginTop:12}} className="no-print">
+      <div style={{...S.icalLegendNote,marginBottom:4,fontWeight:700}}>表示する拠点</div>
+      <div style={S.modeRow}>
+        {[{id:"all",name:"全部"},...farmList].map(o=>(
+          <button key={o.id} style={{...S.modeTab,...(farmFilter===o.id?S.modeActive:{})}} onClick={()=>setFarmFilter(o.id)}>{o.name}</button>
+        ))}
+      </div>
+    </div>
     <div style={S.icalLegend}>
       <div style={S.icalLegendRow}>{farmList.map(f=>(<span key={f.id} style={{...S.icalLegendChip,background:hexToRgba(colorFor(f.id),.18),color:colorFor(f.id)}}>{f.name}</span>))}<span style={S.icalLegendNote}>色＝入荷場所</span></div>
       <div style={S.icalLegendNote}>濃い塗り＝コンテナ／薄い塗り＝それ以外。取消線＝入荷済み。日付をタップでその日の一覧。</div>

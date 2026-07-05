@@ -159,6 +159,12 @@ function isContainerOrder(item,o){
   const cu=(item?.units||[]).find(u=>/コンテナ/.test(u.label||""));
   return !!(cu&&cu.kg>0&&o.kg>=cu.kg*0.9);
 }
+// #rrggbb → rgba(r,g,b,a)
+function hexToRgba(hex,a){
+  const h=String(hex||"").replace("#",""); const n=h.length===3?h.split("").map(c=>c+c).join(""):h;
+  const r=parseInt(n.slice(0,2),16)||0, g=parseInt(n.slice(2,4),16)||0, b=parseInt(n.slice(4,6),16)||0;
+  return `rgba(${r},${g},${b},${a})`;
+}
 
 // ── 外部カレンダー連携 ─────────────────────────────
 function dateToICS(dateStr){ return dateStr.replace(/-/g,""); }
@@ -483,10 +489,14 @@ function canEdit(role, desc){
 }
 
 // ── 入荷予定カレンダー（月グリッド） ──────────
-function IncomingCalendarView({items,onSelect}){
+function IncomingCalendarView({items,colors,onSetColor}){
   const [month,setMonth]=useState(thisMonth());
+  const [selDay,setSelDay]=useState(null);   // クリックした日(iso)
+  const [showColors,setShowColors]=useState(false);
   const [Y,M]=month.split("-").map(Number);
   const shift=(d)=>{ let y=Y,m=M+d; if(m<1){m=12;y--;} if(m>12){m=1;y++;} setMonth(`${y}-${String(m).padStart(2,"0")}`); };
+  const colorFor=(farm)=> (colors&&colors[farm]) || (farm==="shared"?"#6b8f3a":farmColor(farm).accent);
+  const farmShort=(fid)=> fid==="shared"?"共通":(FARMS.find(f=>f.id===fid)?.name||fid).replace("分場","");
   // 入荷予定を日付ごとに集約
   const byDate={};
   for(const it of items){
@@ -494,10 +504,11 @@ function IncomingCalendarView({items,onSelect}){
       if(!o.etaDate) continue;
       (byDate[o.etaDate]=byDate[o.etaDate]||[]).push({
         farm:o.forFarm||"shared", name:it.name, kg:o.kg, unit:unitOf(it),
-        received:!!o.received, container:isContainerOrder(it,o), itemId:it.id,
+        received:!!o.received, container:isContainerOrder(it,o),
       });
     }
   }
+  for(const k in byDate) byDate[k].sort((a,b)=> (a.received-b.received) || String(a.farm).localeCompare(String(b.farm)) );
   const dim=daysInMonth(Y,M);
   const firstDow=new Date(Y,M-1,1).getDay();
   const cells=[];
@@ -506,18 +517,31 @@ function IncomingCalendarView({items,onSelect}){
   while(cells.length%7!==0) cells.push(null);
   const weeks=[]; for(let i=0;i<cells.length;i+=7) weeks.push(cells.slice(i,i+7));
   const todayIso=today();
-  const farmShort=(fid)=> fid==="shared"?"共通":(FARMS.find(f=>f.id===fid)?.name||fid).replace("分場","");
   const monthCount=Object.entries(byDate).filter(([d])=>d.slice(0,7)===month).reduce((s,[,a])=>s+a.length,0);
+  const farmList=[...FARMS.map(f=>({id:f.id,name:f.name})),{id:"shared",name:"共通"}];
+  const wd=["日","月","火","水","木","金","土"];
+  const dayTitle=(diso)=>{ const dt=new Date(diso+"T00:00:00"); return `${dt.getMonth()+1}月${dt.getDate()}日(${wd[dt.getDay()]})`; };
+  const selEvents=selDay?(byDate[selDay]||[]):[];
   return (<div style={S.fade}>
     <div style={S.icalHead} className="no-print">
       <button style={S.calNav} onClick={()=>shift(-1)}>‹</button>
       <span style={S.icalTitle}>{Y}年{M}月 入荷予定</span>
       <button style={S.calNav} onClick={()=>shift(1)}>›</button>
     </div>
+    <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}} className="no-print">
+      <button style={{...S.icalColorBtn,...(showColors?{background:"var(--accent)",color:"#fff",borderColor:"var(--accent)"}:{})}} onClick={()=>setShowColors(v=>!v)}>🎨 色設定</button>
+    </div>
+    {showColors&&(<div style={S.icalColorPanel} className="no-print">
+      <div style={{...S.icalLegendNote,marginBottom:4}}>入荷場所ごとに色を設定できます。濃い塗り＝コンテナ、薄い塗り＝それ以外。</div>
+      {farmList.map(f=>(<div key={f.id} style={S.icalColorRow}>
+        <input type="color" value={colorFor(f.id)} onChange={e=>onSetColor(f.id,e.target.value)} style={S.icalColorInput}/>
+        <span style={S.icalColorName}>{f.name}</span>
+        <span style={{...S.icalPill,background:colorFor(f.id),color:"#fff",width:"auto",margin:0}}>コンテナ例</span>
+        <span style={{...S.icalPill,background:hexToRgba(colorFor(f.id),.18),color:colorFor(f.id),width:"auto",margin:0}}>それ以外</span>
+      </div>))}
+    </div>)}
     <div style={S.icalDowRow}>
-      {["日","月","火","水","木","金","土"].map((w,i)=>(
-        <div key={i} style={{...S.icalDow,color:i===0?"var(--bad)":i===6?"#3a6ea5":"var(--muted)"}}>{w}</div>
-      ))}
+      {wd.map((w,i)=>(<div key={i} style={{...S.icalDow,color:i===0?"var(--bad)":i===6?"#3a6ea5":"var(--muted)"}}>{w}</div>))}
     </div>
     {weeks.map((wk,wi)=>(<div key={wi} style={S.icalWeek}>
       {wk.map((d,di)=>{
@@ -526,27 +550,37 @@ function IncomingCalendarView({items,onSelect}){
         const evs=byDate[dIso]||[];
         const isToday=dIso===todayIso;
         const dow=(firstDow+d-1)%7;
-        return (<div key={di} style={{...S.icalCell,...(isToday?S.icalCellToday:{})}}>
+        return (<button key={di} style={{...S.icalCell,...(isToday?S.icalCellToday:{})}} onClick={()=>setSelDay(dIso)}>
           <div style={{...S.icalDayNum,color:dow===0?"var(--bad)":dow===6?"#3a6ea5":"var(--ink)"}}>{d}</div>
           {evs.map((e,ei)=>{
-            const fc=e.farm==="shared"?{accent:"var(--accent)",tag:"rgba(95,125,60,.18)"}:farmColor(e.farm);
-            const pill=e.container?{background:fc.accent,color:"#fff"}:{background:fc.tag,color:fc.accent};
-            return (<button key={ei}
-              style={{...S.icalPill,...pill,...(e.received?{opacity:0.5,textDecoration:"line-through"}:{})}}
-              onClick={()=>onSelect(e.itemId)}
-              title={`${farmShort(e.farm)} ${e.name}／${fmt(e.kg)}${e.unit}${e.container?"・コンテナ":""}${e.received?"・✓入荷済":"・未入荷"}`}>
-              {farmShort(e.farm)}{e.name}
-            </button>);
+            const c=colorFor(e.farm);
+            const pill=e.container?{background:c,color:"#fff"}:{background:hexToRgba(c,.18),color:c};
+            return (<span key={ei} style={{...S.icalPill,...pill,...(e.received?{opacity:0.5,textDecoration:"line-through"}:{})}}>{e.name}</span>);
           })}
-        </div>);
+        </button>);
       })}
     </div>))}
     {monthCount===0&&<div style={S.empty}>この月の入荷予定はありません。</div>}
     <div style={S.icalLegend}>
-      <div style={S.icalLegendRow}><span style={{...S.icalLegendChip,background:farmColor("a").tag,color:farmColor("a").accent}}>本場</span><span style={{...S.icalLegendChip,background:farmColor("b").tag,color:farmColor("b").accent}}>赤坂</span><span style={{...S.icalLegendChip,background:"rgba(95,125,60,.18)",color:"var(--accent)"}}>共通</span><span style={S.icalLegendNote}>色＝入荷場所</span></div>
-      <div style={S.icalLegendRow}><span style={{...S.icalLegendChip,background:farmColor("a").accent,color:"#fff"}}>濃い＝コンテナ</span><span style={{...S.icalLegendChip,background:farmColor("a").tag,color:farmColor("a").accent}}>薄い＝それ以外</span></div>
-      <div style={S.icalLegendNote}>取消線＝入荷済み。タップで餌の詳細へ。</div>
+      <div style={S.icalLegendRow}>{farmList.map(f=>(<span key={f.id} style={{...S.icalLegendChip,background:hexToRgba(colorFor(f.id),.18),color:colorFor(f.id)}}>{f.name}</span>))}<span style={S.icalLegendNote}>色＝入荷場所</span></div>
+      <div style={S.icalLegendNote}>濃い塗り＝コンテナ／薄い塗り＝それ以外。取消線＝入荷済み。日付をタップでその日の一覧。</div>
     </div>
+    {selDay&&(<>
+      <div style={S.icalModalOverlay} onClick={()=>setSelDay(null)}/>
+      <div style={S.icalModal}>
+        <div style={S.icalModalHead}><b>{dayTitle(selDay)} の入荷予定</b><button style={S.icalModalClose} onClick={()=>setSelDay(null)}>✕</button></div>
+        {selEvents.length===0?<div style={{...S.empty,padding:"14px 6px"}}>予定はありません。</div>:
+          selEvents.map((e,i)=>{ const c=colorFor(e.farm); return (
+            <div key={i} style={S.icalModalRow}>
+              <span style={{...S.icalModalDot,background:c}}/>
+              <span style={{...S.icalModalFarm,color:c}}>{farmShort(e.farm)}</span>
+              <span style={{...S.icalModalName,...(e.received?{textDecoration:"line-through",color:"var(--muted)"}:{})}}>{e.name}</span>
+              <span style={S.icalModalKg}>{fmt(e.kg)}{e.unit}{e.container?"・コンテナ":""}</span>
+              {e.received&&<span style={S.icalModalRecv}>✓入荷済</span>}
+            </div>); })
+        }
+      </div>
+    </>)}
   </div>);
 }
 
@@ -678,6 +712,7 @@ function App(){
     dirty.current=true; if(desc) pendingLog.current=desc; setState(p=>fn(JSON.parse(JSON.stringify(p))));
   };
   const setWarningDays=(d)=>update(s=>{ s.warningDays=Math.max(0,parseInt(d)||0); return s; }, `警告日数を ${d}日 に変更`);
+  const setIncomingColor=(farm,hex)=>update(s=>{ s.incomingColors=s.incomingColors||{}; s.incomingColors[farm]=hex; return s; }, `入荷カレンダーの色を変更（${farm}）`);
   const refreshNow=async()=>{ const s=await loadState(); if(s){ setState(s); setSync("saved"); } setLog(await loadLog()); };
   const nameOf=(id)=>state.items.find(i=>i.id===id)?.name||"餌";
   const saveCount=(id,fid,date,qtys)=>{
@@ -796,7 +831,7 @@ function App(){
       </header>
       <main style={S.main}>
         {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings") && (<>
-          {view==="incoming"&&<IncomingCalendarView items={state.items} onSelect={id=>{setSelId(id);setPrevView("incoming");setView("detail");}}/>}
+          {view==="incoming"&&<IncomingCalendarView items={state.items} colors={state.incomingColors||{}} onSetColor={setIncomingColor}/>}
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items}/>}
@@ -2746,15 +2781,30 @@ const S={
   icalDowRow:{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:3,marginBottom:3},
   icalDow:{textAlign:"center",fontSize:11,fontWeight:700,padding:"2px 0"},
   icalWeek:{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:3,marginBottom:3},
-  icalCell:{minHeight:70,background:"var(--card)",border:"1px solid var(--line)",borderRadius:7,padding:"2px 2px 3px",overflow:"hidden",minWidth:0},
-  icalCellEmpty:{minHeight:70,background:"transparent"},
+  icalCell:{display:"block",width:"100%",minHeight:72,background:"var(--card)",border:"1px solid var(--line)",borderRadius:7,padding:"2px 2px 3px",overflow:"hidden",minWidth:0,textAlign:"left",font:"inherit",color:"inherit",cursor:"pointer"},
+  icalCellEmpty:{minHeight:72,background:"transparent"},
   icalCellToday:{outline:"2px solid var(--accent)",outlineOffset:-1},
-  icalDayNum:{fontSize:11,fontWeight:700,lineHeight:1.2,padding:"0 2px 2px",textAlign:"left"},
-  icalPill:{display:"block",width:"100%",minWidth:0,border:"none",borderRadius:4,padding:"2px 4px",marginBottom:2,fontSize:9.5,fontWeight:700,lineHeight:1.25,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",cursor:"pointer"},
+  icalDayNum:{fontSize:11,fontWeight:700,lineHeight:1.2,padding:"0 1px 2px",textAlign:"left"},
+  icalPill:{display:"block",width:"100%",minWidth:0,border:"none",borderRadius:4,padding:"2px 2px",marginBottom:2,fontSize:9,fontWeight:700,letterSpacing:"-0.3px",lineHeight:1.3,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},
+  icalColorBtn:{border:"1px solid var(--line)",background:"var(--card)",borderRadius:9,padding:"7px 14px",fontSize:13,fontWeight:700,color:"var(--ink)",cursor:"pointer"},
+  icalColorPanel:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:10,padding:"10px 12px",marginBottom:10,display:"flex",flexDirection:"column",gap:8},
+  icalColorRow:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"},
+  icalColorInput:{width:40,height:30,padding:0,border:"1px solid var(--line)",borderRadius:6,background:"#fff",cursor:"pointer",flexShrink:0},
+  icalColorName:{fontSize:14,fontWeight:700,minWidth:64},
   icalLegend:{marginTop:12,padding:"10px 12px",background:"var(--card)",border:"1px solid var(--line)",borderRadius:10,display:"flex",flexDirection:"column",gap:6},
   icalLegendRow:{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"},
   icalLegendChip:{fontSize:11,fontWeight:700,borderRadius:5,padding:"2px 8px"},
   icalLegendNote:{fontSize:11.5,color:"var(--muted)"},
+  icalModalOverlay:{position:"fixed",inset:0,background:"rgba(40,35,20,.35)",zIndex:70},
+  icalModal:{position:"fixed",left:"50%",top:"50%",transform:"translate(-50%,-50%)",width:"min(420px,92vw)",maxHeight:"80vh",overflowY:"auto",background:"var(--paper)",border:"1px solid var(--line)",borderRadius:14,boxShadow:"0 10px 40px rgba(40,35,20,.3)",zIndex:80,padding:"14px 16px"},
+  icalModalHead:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,fontFamily:"'Zen Maru Gothic',sans-serif",fontSize:16,marginBottom:8},
+  icalModalClose:{border:"none",background:"transparent",fontSize:18,color:"var(--muted)",cursor:"pointer"},
+  icalModalRow:{display:"flex",alignItems:"center",gap:8,padding:"9px 2px",borderBottom:"1px solid var(--line)",flexWrap:"wrap"},
+  icalModalDot:{width:12,height:12,borderRadius:3,flexShrink:0},
+  icalModalFarm:{fontSize:12.5,fontWeight:700,minWidth:38},
+  icalModalName:{fontSize:15,fontWeight:700,flex:1,minWidth:0},
+  icalModalKg:{fontSize:13,color:"var(--muted)"},
+  icalModalRecv:{fontSize:11,fontWeight:700,color:"var(--ok)",background:"rgba(95,125,60,.15)",borderRadius:6,padding:"1px 7px"},
   weekRow:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:4},
   weekCell:{textAlign:"center",fontSize:12,fontWeight:700,padding:"2px 0"},
   calGrid:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4},

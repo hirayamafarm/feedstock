@@ -412,6 +412,14 @@ function simulateMonth(item, scope, ymStr){
   } else {
     const b=farmBase(item,effScope); startDate=b.date; startKg=b.kg; dailyUse=(farmStats(item,effScope).usage||0)/30;
   }
+  // 過去の在庫推移も残すため、棚卸し日ごとの実測kgを補正点(anchor)として持つ。
+  // 起点は「最古の棚卸し」にして、以降の棚卸し日で実測に補正しながら推移を再構築する。
+  let anchorMap={};
+  if(effScope!=="all"){
+    const cts=[...(item.counts?.[effScope]||[])].sort((a,b)=>a.date.localeCompare(b.date));
+    for(const c of cts) anchorMap[c.date]=countToKg(item,c.qtys);
+    if(cts.length){ startDate=cts[0].date; startKg=anchorMap[cts[0].date]; }
+  }
   if(!startDate) return null;
   // 入荷の按分（農場別モードで、ある農場だけを見る場合）
   let farmShare=1;
@@ -433,7 +441,7 @@ function simulateMonth(item, scope, ymStr){
   const cells=[]; let kg=startKg; const monthStart=iso(Y,M,1);
   let cursor=startDate;
   // 棚卸し日 → 月初の前日まで進める（月初当日の入荷は forループで処理するので、stepToでは含めない）
-  const stepTo=(t)=>{ while(cursor<t){ const d=new Date(cursor); d.setDate(d.getDate()+1); const nx=d.toISOString().slice(0,10); if(arrivals[nx]) kg+=arrivals[nx]; kg=Math.max(0,kg-dailyUse); cursor=nx; } };
+  const stepTo=(t)=>{ while(cursor<t){ const d=new Date(cursor); d.setDate(d.getDate()+1); const nx=d.toISOString().slice(0,10); if(arrivals[nx]) kg+=arrivals[nx]; kg=Math.max(0,kg-dailyUse); if(anchorMap[nx]!=null) kg=anchorMap[nx]; cursor=nx; } };
   if(cursor<monthStart){
     // 月初の「前日」まで進める。例: cursor=5/29、monthStart=6/1なら、5/30, 5/31 まで進めて、6/1はforループに任せる
     const prevDay=new Date(monthStart); prevDay.setDate(prevDay.getDate()-1);
@@ -443,6 +451,7 @@ function simulateMonth(item, scope, ymStr){
   for(let day=1;day<=dim;day++){
     const date=iso(Y,M,day); const info=arrInfo[date];
     if(date<startDate){ cells.push({day,date,kg:null,before:true,info}); continue; }
+    if(anchorMap[date]!=null){ kg=anchorMap[date]; cursor=date; cells.push({day,date,kg,anchor:true,info}); continue; }
     if(date===startDate){ cells.push({day,date,kg:startKg,anchor:true,info}); kg=startKg; cursor=date; continue; }
     if(arrivals[date]) kg+=arrivals[date]; kg=Math.max(0,kg-dailyUse); cursor=date;
     cells.push({day,date,kg,info});
@@ -767,6 +776,12 @@ function App(){
       return s;
     },`棚卸し: ${nameOf(id)}（${FARMS.find(f=>f.id===fid)?.name} ${date}）${pred!=null?` 予測${fmt(Math.round(pred))}kg→実測${fmt(Math.round(countToKg(it,qtys)))}kg`:""}`);
   };
+  const delCount=(id,fid,date)=>update(s=>{
+    const it=s.items.find(i=>i.id===id);
+    if(it&&it.counts&&it.counts[fid]) it.counts[fid]=it.counts[fid].filter(c=>c.date!==date);
+    if(s.discrepancies) s.discrepancies=s.discrepancies.filter(r=>!(r.itemId===id&&r.farmId===fid&&r.date===date));
+    return s;
+  },`棚卸し取消: ${nameOf(id)}（${FARMS.find(f=>f.id===fid)?.name} ${date}）`);
   const addOrder=(id,kg,etaDate,forFarm)=>update(s=>{ const it=s.items.find(i=>i.id===id); it.orders=it.orders||[]; it.orders.push({id:s.nextOrderId,kg,etaDate,forFarm:forFarm||"shared",received:false}); s.nextOrderId++; return s; },
     `発注予定追加: ${nameOf(id)} ${fmt(kg)}kg（${forFarm&&forFarm!=="shared"?`${FARMS.find(f=>f.id===forFarm)?.name||forFarm}・`:"共通・"}入荷${etaDate}）`);
   const addPreset=(id,label,kg)=>update(s=>{ const it=s.items.find(i=>i.id===id); it.orderPresets=it.orderPresets||[]; it.orderPresets.push({id:"p"+Date.now(),label,kg}); return s; },`発注パターン追加: ${nameOf(id)} ${label}`);
@@ -857,7 +872,7 @@ function App(){
         {view==="detail"&&sel&&<DetailView item={sel} items={state.items} onChangeItem={(id)=>setSelId(id)} onBack={()=>setView(prevView)}
           onAddOrder={(kg,eta,ff)=>addOrder(sel.id,kg,eta,ff)} onToggle={oid=>toggleReceived(sel.id,oid)}
           onDelOrder={oid=>delOrder(sel.id,oid)} onEditOrder={(oid,patch)=>editOrder(sel.id,oid,patch)} onAddPreset={(l,k)=>addPreset(sel.id,l,k)}
-          onDelPreset={pid=>delPreset(sel.id,pid)} onEdit={()=>setView("edit")} onDelete={()=>{delItem(sel.id);setView(prevView);}} warningDays={warningDays} role={role}/>}
+          onDelPreset={pid=>delPreset(sel.id,pid)} onEdit={()=>setView("edit")} onDelete={()=>{delItem(sel.id);setView(prevView);}} onDelCount={(fid,date)=>delCount(sel.id,fid,date)} warningDays={warningDays} role={role}/>}
         {view==="edit"&&sel&&<EditView item={sel} onSave={(patch)=>{editItem(sel.id,patch);setView("detail");}} onCancel={()=>setView("detail")}/>}
         {view==="add"&&<AddView onSave={it=>{addItem(it);setView("inventory");}} onCancel={()=>setView("inventory")}/>}
       </main>
@@ -1618,7 +1633,7 @@ function InventoryView({items,onSave,onAdd,onSelect,role}){
 }
 
 // ── 詳細 ────────────────────────────────────────
-function DetailView({item,items,onChangeItem,onBack,onAddOrder,onToggle,onDelOrder,onEditOrder,onAddPreset,onDelPreset,onEdit,onDelete,warningDays}){
+function DetailView({item,items,onChangeItem,onBack,onAddOrder,onToggle,onDelOrder,onEditOrder,onAddPreset,onDelPreset,onEdit,onDelete,onDelCount,warningDays}){
   const an=analyze(item); const u=unitOf(item);
   const unitStr=(item.units||[]).map(x=>`${x.label} ${x.kg}${u}`).join(" / ");
   const presets=item.orderPresets||[];
@@ -1797,7 +1812,9 @@ function DetailView({item,items,onChangeItem,onBack,onAddOrder,onToggle,onDelOrd
       <h3 style={S.h3}>{FARMS.find(f=>f.id===fid)?.name} の棚卸し履歴</h3>
       {counts.length===0&&<div style={S.empty}>記録なし</div>}
       {counts.map((c,i)=>{ const detail=c.qtys?.__kg!=null?(u==="個"?"個数直接入力":"kg直接入力"):(item.units||[]).filter(x=>c.qtys?.[x.id]).map(x=>`${x.label}${fmt(c.qtys[x.id])}`).join(" ");
-        return (<div key={i} style={S.logRow}><span style={S.logDate}>{c.date}</span><span style={S.logDetail}>{detail||"—"}</span><span style={S.logQty}>{fmt(countToKg(item,c.qtys))} {u}</span></div>); })}
+        return (<div key={i} style={S.logRow}><span style={S.logDate}>{c.date}</span><span style={S.logDetail}>{detail||"—"}</span><span style={S.logQty}>{fmt(countToKg(item,c.qtys))} {u}</span>
+          {onDelCount&&<button style={S.countDelBtn} title="この棚卸しを取り消す" onClick={()=>{ if(confirm(`${FARMS.find(f=>f.id===fid)?.name} ${c.date} の棚卸し記録を取り消しますか？\n（在庫推移の補正点が1つ減ります）`)) onDelCount(fid,c.date); }}>✕</button>}
+        </div>); })}
     </div>); })}
     <button style={S.deleteBtn} onClick={()=>{
       const msg=`「${item.name}」を本当に削除しますか？\n\nこの餌に紐づくすべてのデータが消えます:\n・棚卸し履歴\n・発注予定（${(item.orders||[]).length}件）\n・発注パターン\n・Excel取り込みの消費量\n・別給与の設定\n\nこの操作は取り消せません。`;
@@ -2792,6 +2809,7 @@ const S={
   orderEta:{fontSize:11.5,color:"var(--muted)"},
   miniDel:{width:30,height:30,border:"none",background:"transparent",color:"var(--muted)",fontSize:18},
   logRow:{display:"flex",alignItems:"center",gap:10,padding:"10px 4px",borderBottom:"1px solid var(--line)"},
+  countDelBtn:{width:28,height:28,flexShrink:0,border:"1px solid rgba(168,73,47,.4)",background:"#fff",color:"var(--bad)",borderRadius:7,fontSize:13,fontWeight:700,cursor:"pointer"},
   logDate:{fontSize:13,color:"var(--muted)",width:90,flexShrink:0},
   logDetail:{fontSize:12.5,color:"var(--muted)",flex:1},
   logQty:{fontWeight:700,fontSize:14},

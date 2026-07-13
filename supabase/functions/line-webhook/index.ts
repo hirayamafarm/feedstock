@@ -220,19 +220,20 @@ ${itemLines}
 返すJSON:
 {
  "intent": "order" | "query" | "other",
- "orders": [ {"item":"正式な餌名","farm_id":"a"|"b"|null,"date":"YYYY-MM-DD","units":[{"unit":"単位名","n":数値}]|null} ],
+ "orders": [ {"item":"正式な餌名","farm_id":"a"|"b"|null,"date":"YYYY-MM-DD","received":true|false,"units":[{"unit":"単位名","n":数値}]|null} ],
  "query_items": [ "正式な餌名" ]
 }
 ルール:
-- 入荷予定の登録（日付＋餌＋農場）→ intent="order"、ordersに全件。
+- 入荷予定の登録（日付＋餌＋農場）→ intent="order"、ordersに全件。received=false。
+- 【入荷済み】「入荷済み」「入荷した」「届いた」「入れた」「入荷」など“もう届いた納品”を表す語がある → intent="order"、received=true。日付が書いてなければ date は今日(${todayStr})。例「サイレージ 本場11 入荷済み」→ order 1件、item=ベトナムｃｓ, farm_id=a, received=true, date=今日, units=[{"unit":"個","n":11}]。
 - 在庫の問い合わせ（「サイレージの予定」「重曹どれくらいある?」「ベトナムcs 残り」「在庫」「あと何日」等、数量報告でなく状況を尋ねている）→ intent="query"、query_itemsに対象の餌名（複数可）。
 - 日付は今日(${todayStr})基準で「一番近い未来」に解釈。「6/20」→次に来る6月20日。年跨ぎは最も近い未来。
-- 数量(units)が書かれていなければ null（後で既定の発注パターンを使う）。
+- 単位の指定がない数字は、その餌に「個」単位があれば「個」、無ければ「kg」とみなす。数量そのものが無ければ units=null（既定の発注パターンを使う）。
 - 餌名は正式名に正規化（別名・誤字も。「サイレージ」→「ベトナムｃｓ」等）。
 - 農場が共通在庫の餌で農場指定がなければ farm_id=null でよい。
 - 「6/16 サイレージ 本場 6/20 サイレージ 赤坂」→ order 2件。
 - 「サイレージの予定」「サイレージ どう?」→ query、query_items=["ベトナムｃｓ"]。
-- 【重要】将来の入荷「日付」が無く、餌名＋数量だけの報告（棚卸しの可能性が高い。例「本場 チモシー 26個」「スーダン 24コ」「本場の棚卸し」「はい」）は入荷予定ではないので intent="other" にする（別処理で棚卸しとして扱う）。
+- 【重要】日付も「入荷」系の語も無く、餌名＋数量だけの報告（棚卸しの可能性が高い。例「本場 チモシー 26個」「スーダン 24コ」「本場の棚卸し」「はい」）は入荷予定ではないので intent="other" にする（別処理で棚卸しとして扱う）。※「入荷」系の語があれば上の【入荷済み】を優先しorderにする。
 - どちらでもない雑談 → intent="other"。
 JSONのみ返す。`;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -386,7 +387,9 @@ Deno.serve(async (req) => {
         for (const od of po.orders) {
           const item = findItem(od.item);
           if (!item) { errs.push(`「${od.item}」が見つかりません`); continue; }
-          if (!od.date || !/^\d{4}-\d{2}-\d{2}$/.test(od.date)) { errs.push(`${item.name}の日付を読み取れません`); continue; }
+          let odate = od.date;
+          if ((!odate || !/^\d{4}-\d{2}-\d{2}$/.test(odate)) && od.received) odate = today; // 入荷済みで日付なし → 今日
+          if (!odate || !/^\d{4}-\d{2}-\d{2}$/.test(odate)) { errs.push(`${item.name}の日付を読み取れません`); continue; }
           // 農場決定（共通在庫は shared、それ以外で指定なければエラー）
           const sMode = item.stockMode === "shared" ? "shared" : "split";
           let forFarm = od.farm_id || null;
@@ -409,12 +412,13 @@ Deno.serve(async (req) => {
           if (kg <= 0) { errs.push(`${item.name}の数量が不正です`); continue; }
 
           const oid = nextOrderId++;
+          const recv = !!od.received;
           item.orders = item.orders || [];
-          item.orders.push({ id: oid, kg, etaDate: od.date, forFarm, received: false });
+          item.orders.push({ id: oid, kg, etaDate: odate, forFarm, received: recv });
           mapOrders.push({ item_id: item.id, order_id: oid });
           const fName = forFarm === "shared" ? "共通" : (findFarm(forFarm)?.name || forFarm);
-          const d = new Date(od.date + "T00:00:00+09:00");
-          created.push(`・${od.date}(${dow[d.getDay()]}) ${item.name} ${fName} ${label.trim()}（${fmt(kg)}kg）`);
+          const d = new Date(odate + "T00:00:00+09:00");
+          created.push(`・${odate}(${dow[d.getDay()]}) ${item.name} ${fName} ${label.trim()}（${fmt(kg)}kg）${recv ? "【入荷済み】" : ""}`);
         }
         state.nextOrderId = nextOrderId;
 

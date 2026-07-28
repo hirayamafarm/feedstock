@@ -249,19 +249,12 @@ JSONのみ返す。`;
   return extractJson(await res.json());
 }
 
-Deno.serve(async (req) => {
+async function handleEvents(payload) {
   const TOKEN = Deno.env.get("LINE_TOKEN");
-  const SECRET = Deno.env.get("LINE_CHANNEL_SECRET");
   const CLAUDE = Deno.env.get("CLAUDE_API_KEY");
   const SB_URL = Deno.env.get("SB_URL");
   const SB_KEY = Deno.env.get("SB_SERVICE_KEY");
   const ALLOW_GROUP = Deno.env.get("ALLOW_GROUP_ID") || "";
-
-  const raw = await req.text();
-  const sig = req.headers.get("x-line-signature") || "";
-  if (SECRET && !(await verifySignature(raw, sig, SECRET))) return new Response("bad sig", { status: 401 });
-
-  let payload; try { payload = JSON.parse(raw); } catch { return new Response("ok"); }
 
   for (const ev of (payload.events || [])) {
     // ── 送信取消（unsend）への対応 ──
@@ -632,5 +625,21 @@ Deno.serve(async (req) => {
       await say(TOKEN, replyToken, srcId, "⚠️ うまく処理できませんでした。少し時間をおいて、1行に1つの餌・数量を明記して送り直してください。（例：チモシー 26個）\n" + (e?.message ? `詳細: ${e.message}` : ""));
     }
   }
+}
+
+Deno.serve(async (req) => {
+  const SECRET = Deno.env.get("LINE_CHANNEL_SECRET");
+  const raw = await req.text();
+  const sig = req.headers.get("x-line-signature") || "";
+  if (SECRET && !(await verifySignature(raw, sig, SECRET))) return new Response("bad sig", { status: 401 });
+  let payload; try { payload = JSON.parse(raw); } catch { return new Response("ok"); }
+  // 先にLINEへ200を返し、重い処理(Claude解析/DB)はバックグラウンドで実行する。
+  // これでWebhook応答が速くなり、既読が付かない/遅れる・タイムアウトを防ぐ。
+  const work = handleEvents(payload).catch((e) => console.error("handleEvents error:", e?.message || e));
+  try {
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(work);
+    else await work;
+  } catch { await work; }
   return new Response("ok");
 });
+

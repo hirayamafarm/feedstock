@@ -514,14 +514,17 @@ function canEdit(role, desc){
 }
 
 // ── 入荷予定カレンダー（月グリッド） ──────────
-function IncomingCalendarView({items,colors,onSetColor}){
+function IncomingCalendarView({items,colors,onSetColor,onAddOrder,warningDays}){
   // デフォルト表示月: 26日以降は翌月を表示（翌月カレンダーに今月末が含まれるため）
   const defaultMonth=()=>{ const [ty,tm,td]=today().split("-").map(Number); let y=ty,m=tm; if(td>=26){ m++; if(m>12){m=1;y++;} } return `${y}-${String(m).padStart(2,"0")}`; };
   const [month,setMonth]=useState(defaultMonth());
   const [selDay,setSelDay]=useState(null);   // クリックした日(iso)
   const [showColors,setShowColors]=useState(false);
   const [farmFilter,setFarmFilter]=useState("all"); // 表示する拠点（デフォルト全部）
+  const [planMode,setPlanMode]=useState(false); // 予定を組むモード
+  const [tentative,setTentative]=useState([]);  // 仮の入荷予定 [{itemId,farm,date,kg}]
   const showEv=(e)=> farmFilter==="all"||e.farm===farmFilter;
+  const addDays=(isoStr,n)=>{ const d=new Date(isoStr+"T00:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
   const [Y,M]=month.split("-").map(Number);
   const shift=(d)=>{ let y=Y,m=M+d; if(m<1){m=12;y--;} if(m>12){m=1;y++;} setMonth(`${y}-${String(m).padStart(2,"0")}`); };
   const colorFor=(farm)=> (colors&&colors[farm]) || (farm==="shared"?"#6b8f3a":farmColor(farm).accent);
@@ -537,7 +540,30 @@ function IncomingCalendarView({items,colors,onSetColor}){
       });
     }
   }
+  // 仮の入荷予定もカレンダーに重ねる
+  const nameOfItem=(id)=>items.find(i=>i.id===id)?.name||"餌";
+  for(const t of tentative){
+    const it=items.find(i=>i.id===t.itemId);
+    (byDate[t.date]=byDate[t.date]||[]).push({ farm:t.farm, name:nameOfItem(t.itemId), kg:t.kg, unit:it?unitOf(it):"kg", received:false, container:it?isContainerOrder(it,{kg:t.kg}):false, tentative:true });
+  }
   for(const k in byDate) byDate[k].sort((a,b)=> (a.received-b.received) || String(a.farm).localeCompare(String(b.farm)) );
+  // 推奨入荷予定の計算（仮予定を織り込んだ残り日数で判定）
+  const PLAN_HORIZON=60; // 何日先まで切れる餌を推奨対象にするか
+  const tentByItem={}; for(const t of tentative){ (tentByItem[t.itemId]=tentByItem[t.itemId]||[]).push(t); }
+  const itemsSim=items.map(it=>{ const ts=tentByItem[it.id]; if(!ts||!ts.length) return it;
+    return {...it, orders:[...(it.orders||[]), ...ts.map((t,i)=>({id:"tent"+i,kg:t.kg,etaDate:t.date,forFarm:t.farm,received:false}))]}; });
+  const recos=[];
+  if(planMode){
+    for(const it of itemsSim){
+      const u=unitOf(it); const preset=(it.orderPresets||[])[0];
+      const buffer=Math.max(warningDays||5, Math.round((it.reserveMonths||0)*30));
+      const mk=(farm,daysLeft,suggested)=>{ const offset=Math.max(1,Math.round(daysLeft)-buffer); const recKg=preset?preset.kg:(suggested||0);
+        return {itemId:it.id, name:it.name, farm, daysLeft, recDate:addDays(today(),offset), recKg, unit:u, presetLabel:preset?preset.label:null}; };
+      if(stockModeOf(it)==="shared"){ const an=analyze(it); if(an.monthsLeft!=null){ const dl=Math.round(an.monthsLeft*30); if(dl<PLAN_HORIZON) recos.push(mk("shared",dl,an.suggestedOrder)); } }
+      else { const bf=analyzeByFarm(it); for(const fid of (it.farms||[])){ const b=bf[fid]; if(!b||!b.hasUsage||b.monthsLeft==null) continue; const dl=Math.round(b.monthsLeft*30); if(dl<PLAN_HORIZON) recos.push(mk(fid,dl,b.suggested)); } }
+    }
+    recos.sort((a,b)=>a.daysLeft-b.daysLeft);
+  }
   const dim=daysInMonth(Y,M);
   const firstDow=new Date(Y,M-1,1).getDay();
   // 同じ週にある隣月の日も含める（前月末〜翌月初）
@@ -558,6 +584,34 @@ function IncomingCalendarView({items,colors,onSetColor}){
       <span style={S.icalTitle}>{Y}年{M}月 入荷予定</span>
       <button style={S.calNav} onClick={()=>shift(1)}>›</button>
     </div>
+    <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}} className="no-print">
+      <button style={{...S.icalColorBtn,...(planMode?{background:"var(--warn)",color:"#fff",borderColor:"var(--warn)"}:{})}} onClick={()=>setPlanMode(v=>!v)}>🧮 予定を組む{tentative.length>0?`（仮${tentative.length}）`:""}</button>
+    </div>
+    {planMode&&(<div style={S.planPanel} className="no-print">
+      <div style={{...S.icalLegendNote,marginBottom:6}}>在庫が少ない餌の<b>推奨入荷</b>です。「＋仮」でカレンダーに仮表示（在庫推移に反映）→ 良ければ「登録」。仮は保存されません。</div>
+      {recos.length===0?<div style={{...S.empty,padding:"10px"}}>{PLAN_HORIZON}日以内に不足する餌はありません（仮予定を織り込み済み）。</div>:
+        recos.map((r,i)=>{ const c=colorFor(r.farm); const dl=daysAndEndDate(r.daysLeft/30);
+          return (<div key={i} style={S.planRow}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={S.planName}><span style={{...S.icalLegendChip,background:hexToRgba(c,.18),color:c}}>{farmShort(r.farm)}</span> {r.name}</div>
+              <div style={S.planMeta}>残り{r.daysLeft}日（{dl.endLabel}頃まで）→ 推奨 <b>{r.recDate.slice(5).replace("-","/")}</b> に {r.recKg>0?`${fmt(r.recKg)}${r.unit}${r.presetLabel?`（${r.presetLabel}）`:""}`:"（量未設定）"}</div>
+            </div>
+            <button style={S.planTentBtn} onClick={()=>setTentative(t=>[...t,{itemId:r.itemId,farm:r.farm,date:r.recDate,kg:r.recKg}])}>＋仮</button>
+            <button style={S.planAddBtn} disabled={!(r.recKg>0)} onClick={()=>{ if(r.recKg>0){ onAddOrder(r.itemId,r.recKg,r.recDate,r.farm); setTentative(t=>t.filter(x=>!(x.itemId===r.itemId&&x.date===r.recDate&&x.farm===r.farm))); } }}>登録</button>
+          </div>); })
+      }
+      {tentative.length>0&&(<div style={{marginTop:10,borderTop:"1px solid var(--line)",paddingTop:8}}>
+        <div style={{...S.icalLegendNote,fontWeight:700,marginBottom:4}}>仮の予定（{tentative.length}件）</div>
+        {tentative.map((t,i)=>(<div key={i} style={S.planTentRow}>
+          <span style={{flex:1,minWidth:0}}>{t.date.slice(5).replace("-","/")} {farmShort(t.farm)} {nameOfItem(t.itemId)} {fmt(t.kg)}kg</span>
+          <button style={S.planDelBtn} onClick={()=>setTentative(list=>list.filter((_,j)=>j!==i))}>✕</button>
+        </div>))}
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          <button style={{...S.planAddBtn,flex:1}} onClick={()=>{ tentative.forEach(t=>{ if(t.kg>0) onAddOrder(t.itemId,t.kg,t.date,t.farm); }); setTentative([]); }}>仮を全部 登録する</button>
+          <button style={S.planDelBtn} onClick={()=>setTentative([])}>全部消す</button>
+        </div>
+      </div>)}
+    </div>)}
     <div style={S.icalDowRow}>
       {wd.map((w,i)=>(<div key={i} style={{...S.icalDow,color:i===0?"var(--bad)":i===6?"#3a6ea5":"var(--muted)"}}>{w}</div>))}
     </div>
@@ -572,9 +626,9 @@ function IncomingCalendarView({items,colors,onSetColor}){
           <div style={{...S.icalDayNum,color:numCol}}>{cell.day}</div>
           {evs.map((e,ei)=>{
             const c=colorFor(e.farm);
-            const pill=e.container?{background:c,color:"#fff"}:{background:hexToRgba(c,.18),color:c};
+            const pill=e.tentative?{background:hexToRgba(c,.10),color:c,border:`1px dashed ${c}`}:(e.container?{background:c,color:"#fff"}:{background:hexToRgba(c,.18),color:c});
             const fade=(e.received?{opacity:0.5,textDecoration:"line-through"}:(cell.inMonth?{}:{opacity:0.55}));
-            return (<span key={ei} style={{...S.icalPill,...pill,...fade}}>{e.name}</span>);
+            return (<span key={ei} style={{...S.icalPill,...pill,...fade}}>{e.tentative?"仮 ":""}{e.name}</span>);
           })}
         </button>);
       })}
@@ -860,7 +914,7 @@ function App(){
       </header>
       <main style={S.main}>
         {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings") && (<>
-          {view==="incoming"&&<IncomingCalendarView items={state.items} colors={state.incomingColors||{}} onSetColor={setIncomingColor}/>}
+          {view==="incoming"&&<IncomingCalendarView items={state.items} colors={state.incomingColors||{}} onSetColor={setIncomingColor} onAddOrder={addOrder} warningDays={warningDays}/>}
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items}/>}
@@ -2830,6 +2884,14 @@ const S={
   icalDayNum:{position:"absolute",top:1,left:3,fontSize:11,fontWeight:700,lineHeight:1,textAlign:"left"},
   icalPill:{display:"block",width:"100%",minWidth:0,border:"none",borderRadius:3,padding:"1px 2px",marginBottom:1,fontSize:10,fontWeight:700,letterSpacing:"-0.2px",lineHeight:1.3,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden"},
   icalColorBtn:{border:"1px solid var(--line)",background:"var(--card)",borderRadius:9,padding:"7px 14px",fontSize:13,fontWeight:700,color:"var(--ink)",cursor:"pointer"},
+  planPanel:{background:"var(--card)",border:"1px solid var(--warn)",borderRadius:10,padding:"10px 12px",marginBottom:10},
+  planRow:{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"1px solid var(--line)"},
+  planName:{fontSize:14,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},
+  planMeta:{fontSize:12,color:"var(--muted)",marginTop:2},
+  planTentBtn:{flexShrink:0,border:"1px dashed var(--accent)",background:"#fff",color:"var(--accent)",borderRadius:8,padding:"7px 10px",fontSize:12.5,fontWeight:700,cursor:"pointer"},
+  planAddBtn:{flexShrink:0,border:"none",background:"var(--ok)",color:"#fff",borderRadius:8,padding:"7px 12px",fontSize:12.5,fontWeight:700,cursor:"pointer"},
+  planTentRow:{display:"flex",alignItems:"center",gap:8,fontSize:13,padding:"4px 0"},
+  planDelBtn:{flexShrink:0,border:"1px solid var(--line)",background:"#fff",color:"var(--bad)",borderRadius:7,padding:"6px 10px",fontSize:12.5,fontWeight:700,cursor:"pointer"},
   icalColorPanel:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:10,padding:"10px 12px",marginBottom:10,display:"flex",flexDirection:"column",gap:8},
   icalColorRow:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"},
   icalColorInput:{width:40,height:30,padding:0,border:"1px solid var(--line)",borderRadius:6,background:"#fff",cursor:"pointer",flexShrink:0},

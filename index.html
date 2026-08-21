@@ -326,8 +326,8 @@ function analyze(item){
     }
     totalStock+=Math.max(0, base.kg+receivedSince-consumedSince);
   }
-  // 発注残は「入荷予定日が今日より未来」のもののみ(未入荷/入荷済問わず、未来分は加算待ち)
-  const pendingKg=orders.filter(o=>o.etaDate>todayStr&&!o.received).reduce((s,o)=>s+o.kg,0);
+  // 発注残は「入荷予定日が今日より未来」のもの全て(未入荷/入荷済問わず。確定した入荷予定は必ず計算に入れる)
+  const pendingKg=orders.filter(o=>o.etaDate>todayStr).reduce((s,o)=>s+o.kg,0);
   let suggestedOrder=null, monthsLeft=null;
   if(hasUsage&&totalUsage>0){
     const eff=totalStock+pendingKg; monthsLeft=eff/totalUsage;
@@ -367,7 +367,7 @@ function analyzeByFarm(item){
     const stock=base.date!=null?Math.max(0, base.kg+receivedSince-consumedSince):0;
 
     // 発注残 = 入荷予定日が今日より未来の発注のみ（未入荷/入荷済の区別はしない、未来分はpendingに含める）
-    const pending=orders.filter(o=>o.etaDate>todayStr&&!o.received&&(orderForFarm(o)===fid||orderForFarm(o)==="shared")).reduce((s,o)=>{
+    const pending=orders.filter(o=>o.etaDate>todayStr&&(orderForFarm(o)===fid||orderForFarm(o)==="shared")).reduce((s,o)=>{
       if(orderForFarm(o)==="shared"){
         let tot=0,mine=0; for(const f of item.farms){ const u=farmStats(item,f).usage||0; tot+=u; if(f===fid) mine=u; }
         const share=tot>0?mine/tot:1/item.farms.length;
@@ -1869,10 +1869,10 @@ function CalendarView({items,onAddOrder,warningDays}){
     for(const it of itemsSim){
       const u=unitOf(it); const preset=(it.orderPresets||[])[0];
       const buffer=Math.max(warningDays||5, Math.round((it.reserveMonths||0)*30));
-      const mk=(farm,daysLeft,suggested)=>{ const offset=Math.max(1,Math.round(daysLeft)-buffer); const recKg=preset?preset.kg:(suggested||0);
-        return {itemId:it.id, name:it.name, farm, daysLeft, recDate:addDays(today(),offset), recKg, unit:u, presetLabel:preset?preset.label:null}; };
-      if(stockModeOf(it)==="shared"){ const an=analyze(it); if(an.monthsLeft!=null){ const dl=Math.round(an.monthsLeft*30); if(dl<60) recos.push(mk("shared",dl,an.suggestedOrder)); } }
-      else { const bf=analyzeByFarm(it); for(const fid of (it.farms||[])){ const b=bf[fid]; if(!b||!b.hasUsage||b.monthsLeft==null) continue; const dl=Math.round(b.monthsLeft*30); if(dl<60) recos.push(mk(fid,dl,b.suggested)); } }
+      const mk=(farm,daysLeft,suggested,monthly)=>{ const offset=Math.max(1,Math.round(daysLeft)-buffer); const recKg=preset?preset.kg:(suggested||0);
+        return {itemId:it.id, name:it.name, farm, daysLeft, recDate:addDays(today(),offset), recKg, unit:u, presetLabel:preset?preset.label:null, monthly:monthly||null, daily:monthly?monthly/30:null}; };
+      if(stockModeOf(it)==="shared"){ const an=analyze(it); if(an.monthsLeft!=null){ const dl=Math.round(an.monthsLeft*30); if(dl<60) recos.push(mk("shared",dl,an.suggestedOrder,an.totalUsage)); } }
+      else { const bf=analyzeByFarm(it); for(const fid of (it.farms||[])){ const b=bf[fid]; if(!b||!b.hasUsage||b.monthsLeft==null) continue; const dl=Math.round(b.monthsLeft*30); if(dl<60) recos.push(mk(fid,dl,b.suggested,b.usage)); } }
     }
     recos.sort((a,b)=>a.daysLeft-b.daysLeft);
   }
@@ -1968,7 +1968,7 @@ function CalendarView({items,onAddOrder,warningDays}){
         return rlist.map((r,i)=>(<div key={i} style={S.planRow}>
           <div style={{flex:1,minWidth:0}}>
             <div style={S.planName}>{farmShort(r.farm)} {r.name}</div>
-            <div style={S.planMeta}>残り{r.daysLeft}日 → 推奨 <b>{r.recDate.slice(5).replace("-","/")}</b> に {r.recKg>0?`${fmt(r.recKg)}${r.unit}`:"（量未設定）"}</div>
+            <div style={S.planMeta}>残り{r.daysLeft}日{r.daily?`／日${fmt(r.daily)}${r.unit}・月${fmt(r.monthly)}${r.unit}`:""} → 推奨 <b>{r.recDate.slice(5).replace("-","/")}</b> に {r.recKg>0?`${fmt(r.recKg)}${r.unit}`:"（量未設定）"}</div>
           </div>
           <button style={S.planTentBtn} onClick={()=>setTentative(t=>[...t,{itemId:r.itemId,farm:r.farm,date:r.recDate,kg:r.recKg}])}>＋仮</button>
           {onAddOrder&&<button style={S.planAddBtn} disabled={!(r.recKg>0)} onClick={()=>{ if(r.recKg>0) onAddOrder(r.itemId,r.recKg,r.recDate,r.farm); }}>登録</button>}

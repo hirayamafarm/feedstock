@@ -394,7 +394,7 @@ function simulateMonth(item, scope, ymStr){
     const mc=[];
     for(let i=0;i<dim;i++){ let sum=0,act=false,anc=false,info=null;
       for(const s of sims){ const cc=s.cells[i]; if(!cc) continue;
-        if(cc.info){ if(!info) info={kg:0,anyPending:false,anyReceived:false}; info.kg+=cc.info.kg; if(cc.info.anyReceived)info.anyReceived=true; if(cc.info.anyPending)info.anyPending=true; }
+        if(cc.info){ if(!info) info={kg:0,anyPending:false,anyReceived:false,anyTentative:false}; info.kg+=cc.info.kg; if(cc.info.anyReceived)info.anyReceived=true; if(cc.info.anyPending)info.anyPending=true; if(cc.info.anyTentative)info.anyTentative=true; }
         if(cc.anchor) anc=true; if(!cc.before&&cc.kg!=null){ sum+=cc.kg; act=true; } }
       mc.push(act?{day:i+1,date:iso(Y,M,i+1),kg:sum,info,anchor:anc}:{day:i+1,date:iso(Y,M,i+1),kg:null,before:true,info}); }
     return { cells:mc,dailyUse:du,startDate:sd,dim,Y,M };
@@ -436,7 +436,7 @@ function simulateMonth(item, scope, ymStr){
     else if(fff==="shared"){ k=o.kg*farmShare; }
     else continue;
     arrivals[o.etaDate]=(arrivals[o.etaDate]||0)+k;
-    const c=arrInfo[o.etaDate]||{kg:0,anyPending:false,anyReceived:false}; c.kg+=k; if(o.received)c.anyReceived=true; else c.anyPending=true; arrInfo[o.etaDate]=c;
+    const c=arrInfo[o.etaDate]||{kg:0,anyPending:false,anyReceived:false,anyTentative:false}; c.kg+=k; if(o.received)c.anyReceived=true; else c.anyPending=true; if(o.tentative)c.anyTentative=true; arrInfo[o.etaDate]=c;
   }
   const cells=[]; let kg=startKg; const monthStart=iso(Y,M,1);
   let cursor=startDate;
@@ -1833,6 +1833,7 @@ function CalendarView({items,onAddOrder,warningDays}){
   const [mFarm,setMFarm]=useState("");
   const [mDate,setMDate]=useState(today());
   const [mKg,setMKg]=useState("");
+  const [recoScope,setRecoScope]=useState("all"); // 推奨: all=全餌 / one=指定した餌だけ
   const [itemId,setItemId]=useState(items[0]?.id??null);
   const item=items.find(i=>i.id===itemId)||items[0];
   // 個別表示: 共通モードは「合計」のみ、農場別モードは合計+各農場
@@ -1853,7 +1854,7 @@ function CalendarView({items,onAddOrder,warningDays}){
   const addDays=(isoStr,n)=>{ const d=new Date(isoStr+"T00:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
   const tentByItem={}; for(const t of tentative){ (tentByItem[t.itemId]=tentByItem[t.itemId]||[]).push(t); }
   const itemsSim=items.map(it=>{ const ts=tentByItem[it.id]; if(!ts||!ts.length) return it;
-    return {...it, orders:[...(it.orders||[]), ...ts.map((t,i)=>({id:"tent"+it.id+"-"+i,kg:t.kg,etaDate:t.date,forFarm:t.farm,received:false}))]}; });
+    return {...it, orders:[...(it.orders||[]), ...ts.map((t,i)=>({id:"tent"+it.id+"-"+i,kg:t.kg,etaDate:t.date,forFarm:t.farm,received:false,tentative:true}))]}; });
   const simItem=itemsSim.find(i=>i.id===item.id)||item;
   const farmShort=(fid)=> fid==="shared"?"共通":(FARMS.find(f=>f.id===fid)?.name||fid).replace("分場","");
   const nameOfItem=(id)=>items.find(i=>i.id===id)?.name||"餌";
@@ -1957,16 +1958,21 @@ function CalendarView({items,onAddOrder,warningDays}){
         <input type="number" inputMode="decimal" style={{...S.exportDate,flex:1,minWidth:0}} placeholder={`量kg${mPreset?`（既定${fmt(mPreset.kg)}）`:""}`} value={mKg} onChange={e=>setMKg(e.target.value)}/>
         <button style={S.planTentBtn} onClick={()=>{ const kg=parseFloat(mKg)||(mPreset?mPreset.kg:0); if(kg>0&&effMFarm&&mDate){ setTentative(t=>[...t,{itemId:mItemId,farm:effMFarm,date:mDate,kg}]); setMKg(""); } }}>＋仮</button>
       </div>
-      {/* 推奨 */}
-      {recos.length>0&&<div style={{...S.icalLegendNote,fontWeight:700,margin:"8px 0 2px"}}>推奨（60日以内に不足）</div>}
-      {recos.map((r,i)=>(<div key={i} style={S.planRow}>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={S.planName}>{farmShort(r.farm)} {r.name}</div>
-          <div style={S.planMeta}>残り{r.daysLeft}日 → 推奨 <b>{r.recDate.slice(5).replace("-","/")}</b> に {r.recKg>0?`${fmt(r.recKg)}${r.unit}`:"（量未設定）"}</div>
-        </div>
-        <button style={S.planTentBtn} onClick={()=>setTentative(t=>[...t,{itemId:r.itemId,farm:r.farm,date:r.recDate,kg:r.recKg}])}>＋仮</button>
-        {onAddOrder&&<button style={S.planAddBtn} disabled={!(r.recKg>0)} onClick={()=>{ if(r.recKg>0) onAddOrder(r.itemId,r.recKg,r.recDate,r.farm); }}>登録</button>}
-      </div>))}
+      {/* 推奨: 全餌 / 指定した餌だけ */}
+      <div style={{...S.modeRow,margin:"8px 0 4px"}}>
+        <button style={{...S.modeTab,...(recoScope==="all"?S.modeActive:{})}} onClick={()=>setRecoScope("all")}>全餌の推奨</button>
+        <button style={{...S.modeTab,...(recoScope==="one"?S.modeActive:{})}} onClick={()=>setRecoScope("one")}>指定した餌だけ</button>
+      </div>
+      {(()=>{ const rlist=recos.filter(r=>recoScope==="all"||r.itemId===mItemId);
+        if(rlist.length===0) return <div style={{...S.icalLegendNote,padding:"4px 0"}}>{recoScope==="one"?`「${mItem?.name||""}」は60日以内の不足はありません。`:"60日以内に不足する餌はありません。"}</div>;
+        return rlist.map((r,i)=>(<div key={i} style={S.planRow}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={S.planName}>{farmShort(r.farm)} {r.name}</div>
+            <div style={S.planMeta}>残り{r.daysLeft}日 → 推奨 <b>{r.recDate.slice(5).replace("-","/")}</b> に {r.recKg>0?`${fmt(r.recKg)}${r.unit}`:"（量未設定）"}</div>
+          </div>
+          <button style={S.planTentBtn} onClick={()=>setTentative(t=>[...t,{itemId:r.itemId,farm:r.farm,date:r.recDate,kg:r.recKg}])}>＋仮</button>
+          {onAddOrder&&<button style={S.planAddBtn} disabled={!(r.recKg>0)} onClick={()=>{ if(r.recKg>0) onAddOrder(r.itemId,r.recKg,r.recDate,r.farm); }}>登録</button>}
+        </div>)); })()}
       {/* 仮の一覧 */}
       {tentative.length>0&&(<div style={{marginTop:10,borderTop:"1px solid var(--line)",paddingTop:8}}>
         <div style={{...S.icalLegendNote,fontWeight:700,marginBottom:4}}>仮の入荷（{tentative.length}件・未保存）</div>
@@ -2056,7 +2062,7 @@ function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
         {cell.before?"":fmt(Math.round(cell.kg))}
         {trend&&<span style={{color:trend.col,marginLeft:3,fontSize:11}}>{trend.mark}</span>}
       </span>
-      {cell.info&&<span style={S.vtArrival}>{cell.info.anyReceived&&!cell.info.anyPending?"✓":"📦"}+{fmt(Math.round(cell.info.kg))}</span>}
+      {cell.info&&<span style={{...S.vtArrival,color:cell.info.anyTentative?"var(--warn)":"var(--accent)"}}>{cell.info.anyTentative?"🧪仮":(cell.info.anyReceived&&!cell.info.anyPending?"✓":"📦")}+{fmt(Math.round(cell.info.kg))}</span>}
     </td>);
   };
 
@@ -2152,8 +2158,8 @@ function MonthGrid({item,scope,ymStr,large}){
         const dayCol=dow===0?"var(--bad)":dow===6?"#3a6ea5":"var(--muted)";
         const inf=c.info; return (<div key={c.day} style={{...cellStyle,background:bg,outline:isT?"2px solid var(--accent)":"none"}}>
           <span style={{...S.dayNum,fontSize:large?11:9,color:dayCol,fontWeight:dow===0||dow===6?700:400}}>{c.day}</span>
-          {inf&&large&&<span style={{...S.arrowMark,color:inf.anyReceived&&!inf.anyPending?"var(--ok)":"var(--accent)"}}>{inf.anyReceived&&!inf.anyPending?"✓入荷":"📦入荷"}</span>}
-          {inf&&!large&&<span style={{...S.arrowMark,color:inf.anyReceived&&!inf.anyPending?"var(--ok)":"var(--accent)",fontSize:8}}>📦</span>}
+          {inf&&large&&<span style={{...S.arrowMark,color:inf.anyTentative?"var(--warn)":(inf.anyReceived&&!inf.anyPending?"var(--ok)":"var(--accent)")}}>{inf.anyTentative?"🧪仮入荷":(inf.anyReceived&&!inf.anyPending?"✓入荷":"📦入荷")}</span>}
+          {inf&&!large&&<span style={{...S.arrowMark,color:inf.anyTentative?"var(--warn)":(inf.anyReceived&&!inf.anyPending?"var(--ok)":"var(--accent)"),fontSize:8}}>{inf.anyTentative?"🧪":"📦"}</span>}
           <span style={{...S.dayKg,color:col,fontSize:large?12:9.5}}>{c.before?"":fmt(Math.round(c.kg))}</span>
           {inf&&large&&<span style={S.arrKg}>+{fmt(Math.round(inf.kg))}</span>}
         </div>); })}

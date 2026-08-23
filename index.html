@@ -1856,6 +1856,12 @@ function CalendarView({items,onAddOrder,warningDays}){
   const itemsSim=items.map(it=>{ const ts=tentByItem[it.id]; if(!ts||!ts.length) return it;
     return {...it, orders:[...(it.orders||[]), ...ts.map((t,i)=>({id:"tent"+it.id+"-"+i,kg:t.kg,etaDate:t.date,forFarm:t.farm,received:false,tentative:true}))]}; });
   const simItem=itemsSim.find(i=>i.id===item.id)||item;
+  // 仮予定込みで在庫が何月何日まで持つか（today+残り日数）
+  const holdDateFor=(itemId,farm)=>{ const simIt=itemsSim.find(i=>i.id===itemId); if(!simIt) return null;
+    let ml=null;
+    if(stockModeOf(simIt)==="shared") ml=analyze(simIt).monthsLeft;
+    else { const b=analyzeByFarm(simIt)[farm]; ml=b?b.monthsLeft:null; }
+    return ml!=null? addDays(today(), Math.round(ml*30)) : null; };
   const farmShort=(fid)=> fid==="shared"?"共通":(FARMS.find(f=>f.id===fid)?.name||fid).replace("分場","");
   const nameOfItem=(id)=>items.find(i=>i.id===id)?.name||"餌";
   // 手動仮追加フォームの農場候補
@@ -1976,10 +1982,10 @@ function CalendarView({items,onAddOrder,warningDays}){
       {/* 仮の一覧 */}
       {tentative.length>0&&(<div style={{marginTop:10,borderTop:"1px solid var(--line)",paddingTop:8}}>
         <div style={{...S.icalLegendNote,fontWeight:700,marginBottom:4}}>仮の入荷（{tentative.length}件・未保存）</div>
-        {tentative.map((t,i)=>(<div key={i} style={S.planTentRow}>
-          <span style={{flex:1,minWidth:0}}>{t.date.slice(5).replace("-","/")} {farmShort(t.farm)} {nameOfItem(t.itemId)} {fmt(t.kg)}kg</span>
+        {tentative.map((t,i)=>{ const h=holdDateFor(t.itemId,t.farm); return (<div key={i} style={S.planTentRow}>
+          <span style={{flex:1,minWidth:0}}>{t.date.slice(5).replace("-","/")} {farmShort(t.farm)} {nameOfItem(t.itemId)} {fmt(t.kg)}kg{h?<b style={{color:"var(--accent)"}}> → {h.slice(5).replace("-","/")}まで持つ</b>:""}</span>
           <button style={S.planDelBtn} onClick={()=>setTentative(list=>list.filter((_,j)=>j!==i))}>✕</button>
-        </div>))}
+        </div>); })}
         {onAddOrder&&<div style={{display:"flex",gap:8,marginTop:8}}>
           <button style={{...S.planAddBtn,flex:1}} onClick={()=>{ tentative.forEach(t=>{ if(t.kg>0) onAddOrder(t.itemId,t.kg,t.date,t.farm); }); setTentative([]); }}>仮を全部 登録する</button>
           <button style={S.planDelBtn} onClick={()=>setTentative([])}>全部消す</button>

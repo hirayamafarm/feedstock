@@ -521,13 +521,14 @@ function canEdit(role, desc){
 }
 
 // ── 入荷予定カレンダー（月グリッド） ──────────
-function IncomingCalendarView({items,colors,onSetColor}){
+function IncomingCalendarView({items,colors,onSetColor,onEditOrder,onDelOrder,onToggleReceived}){
   // デフォルト表示月: 26日以降は翌月を表示（翌月カレンダーに今月末が含まれるため）
   const defaultMonth=()=>{ const [ty,tm,td]=today().split("-").map(Number); let y=ty,m=tm; if(td>=26){ m++; if(m>12){m=1;y++;} } return `${y}-${String(m).padStart(2,"0")}`; };
   const [month,setMonth]=useState(defaultMonth());
   const [selDay,setSelDay]=useState(null);   // クリックした日(iso)
   const [showColors,setShowColors]=useState(false);
   const [farmFilter,setFarmFilter]=useState("all"); // 表示する拠点（デフォルト全部）
+  const [edId,setEdId]=useState(null); const [edKg,setEdKg]=useState(""); const [edDate,setEdDate]=useState(""); // 予定編集
   const showEv=(e)=> farmFilter==="all"||e.farm===farmFilter;
   const [Y,M]=month.split("-").map(Number);
   const shift=(d)=>{ let y=Y,m=M+d; if(m<1){m=12;y--;} if(m>12){m=1;y++;} setMonth(`${y}-${String(m).padStart(2,"0")}`); };
@@ -540,7 +541,7 @@ function IncomingCalendarView({items,colors,onSetColor}){
       if(!o.etaDate) continue;
       (byDate[o.etaDate]=byDate[o.etaDate]||[]).push({
         farm:o.forFarm||"shared", name:it.name, kg:o.kg, unit:unitOf(it),
-        received:!!o.received, container:isContainerOrder(it,o),
+        received:!!o.received, container:isContainerOrder(it,o), itemId:it.id, orderId:o.id,
       });
     }
   }
@@ -616,13 +617,27 @@ function IncomingCalendarView({items,colors,onSetColor}){
       <div style={S.icalModal}>
         <div style={S.icalModalHead}><b>{dayTitle(selDay)} の入荷予定</b><button style={S.icalModalClose} onClick={()=>setSelDay(null)}>✕</button></div>
         {selEvents.length===0?<div style={{...S.empty,padding:"14px 6px"}}>予定はありません。</div>:
-          selEvents.map((e,i)=>{ const c=colorFor(e.farm); return (
-            <div key={i} style={S.icalModalRow}>
-              <span style={{...S.icalModalDot,background:c}}/>
-              <span style={{...S.icalModalFarm,color:c}}>{farmShort(e.farm)}</span>
-              <span style={{...S.icalModalName,...(e.received?{textDecoration:"line-through",color:"var(--muted)"}:{})}}>{e.name}</span>
-              <span style={S.icalModalKg}>{fmt(e.kg)}{e.unit}{e.container?"・コンテナ":""}</span>
-              {e.received&&<span style={S.icalModalRecv}>✓入荷済</span>}
+          selEvents.map((e,i)=>{ const c=colorFor(e.farm); const editing=edId===e.orderId&&e.orderId!=null; const canEdit=onEditOrder&&e.orderId!=null;
+            return (<div key={i}>
+              <div style={S.icalModalRow}>
+                <span style={{...S.icalModalDot,background:c}}/>
+                <span style={{...S.icalModalFarm,color:c}}>{farmShort(e.farm)}</span>
+                <span style={{...S.icalModalName,...(e.received?{textDecoration:"line-through",color:"var(--muted)"}:{})}}>{e.name}</span>
+                <span style={S.icalModalKg}>{fmt(e.kg)}{e.unit}{e.container?"・コンテナ":""}</span>
+                {e.received&&<span style={S.icalModalRecv}>✓入荷済</span>}
+                {canEdit&&<button style={S.icalEditBtn} onClick={()=>{ if(editing){ setEdId(null); } else { setEdId(e.orderId); setEdKg(String(e.kg)); setEdDate(selDay); } }}>{editing?"閉":"変更"}</button>}
+              </div>
+              {editing&&(<div style={S.icalEditForm}>
+                <div style={S.icalEditRow}>
+                  <label style={S.icalEditLbl}>入荷日<input type="date" style={S.icalEditInput} value={edDate} onChange={ev=>setEdDate(ev.target.value)}/></label>
+                  <label style={S.icalEditLbl}>量({e.unit})<input type="number" inputMode="decimal" style={S.icalEditInput} value={edKg} onChange={ev=>setEdKg(ev.target.value)}/></label>
+                </div>
+                <div style={S.icalEditRow}>
+                  <button style={S.icalEditSave} onClick={()=>{ const kg=parseFloat(edKg); onEditOrder(e.itemId,e.orderId,{kg:isNaN(kg)?e.kg:kg,etaDate:edDate||selDay}); setEdId(null); setSelDay(null); }}>保存</button>
+                  <button style={S.planTentBtn} onClick={()=>{ onToggleReceived&&onToggleReceived(e.itemId,e.orderId); setEdId(null); }}>{e.received?"未入荷に戻す":"入荷済みにする"}</button>
+                  <button style={S.planDelBtn} onClick={()=>{ if(confirm("この入荷予定を削除しますか？")){ onDelOrder&&onDelOrder(e.itemId,e.orderId); setEdId(null); setSelDay(null); } }}>削除</button>
+                </div>
+              </div>)}
             </div>); })
         }
       </div>
@@ -863,7 +878,7 @@ function App(){
       </header>
       <main style={S.main}>
         {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings") && (<>
-          {view==="incoming"&&<IncomingCalendarView items={state.items} colors={state.incomingColors||{}} onSetColor={setIncomingColor}/>}
+          {view==="incoming"&&<IncomingCalendarView items={state.items} colors={state.incomingColors||{}} onSetColor={setIncomingColor} onEditOrder={editOrder} onDelOrder={delOrder} onToggleReceived={toggleReceived}/>}
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items} onAddOrder={addOrder} warningDays={warningDays}/>}
@@ -1687,7 +1702,8 @@ function DetailView({item,items,onChangeItem,onBack,onAddOrder,onToggle,onDelOrd
       <Stat label="現在庫(合計)" value={`${fmt(an.totalStock)} ${u}`}/>
       <Stat label="発注残(未入荷)" value={`${fmt(an.pendingKg)} ${u}`} highlight={an.pendingKg>0} hl="var(--warn)"/>
       <Stat label={an.hasExcel?"月間消費(Excel基準)":"月間消費(棚卸し推定)"} value={an.totalUsage!=null?`約${fmt(an.totalUsage)} ${u}`:"—"}/>
-      <Stat label="残り在庫(発注残込)" value={(()=>{ const r=daysAndEndDate(an.monthsLeft); return r.days!=null?`${r.days}日 (${r.endLabel}まで)`:"—"; })()}/>
+      <Stat label="残り(今の在庫だけ)" value={(()=>{ const r=daysAndEndDate(an.monthsLeftStock); return r.days!=null?`${r.days}日 (${r.endLabel}まで)`:"—"; })()}/>
+      <Stat label="残り(発注残込)" value={(()=>{ const r=daysAndEndDate(an.monthsLeft); return r.days!=null?`${r.days}日 (${r.endLabel}まで)`:"—"; })()}/>
       <Stat label="追加発注の目安(合計)" value={an.suggestedOrder!=null?`${fmt(an.suggestedOrder)} ${u}`:"—"} highlight={an.suggestedOrder>0}/>
     </div>
     {/* 農場別の状況（両モードで表示。共通モードでは参考、農場別モードではメイン） */}
@@ -1700,7 +1716,7 @@ function DetailView({item,items,onChangeItem,onBack,onAddOrder,onToggle,onDelOrd
             <span>在庫 <b>{fmt(b.stock)}</b>{u}</span>
             {b.hasUsage&&<span>月消費 約{fmt(b.usage)}{u}</span>}
             {b.pending>0&&<span>発注残 {fmt(Math.round(b.pending))}{u}</span>}
-            {sMode==="split"&&b.monthsLeft!=null&&(()=>{ const r=daysAndEndDate(b.monthsLeft); return <span>残り {r.days}日 ({r.endLabel}まで)</span>; })()}
+            {sMode==="split"&&b.monthsLeft!=null&&<span><RemainDays monthsLeftStock={b.monthsLeftStock} monthsLeft={b.monthsLeft} pending={b.pending}/></span>}
             {sMode==="split"&&b.suggested>0&&<span style={{color:"var(--bad)",fontWeight:700}}>追加発注目安 {fmt(b.suggested)}{u}</span>}
           </div>
         </div>); })}
@@ -2949,6 +2965,12 @@ const S={
   icalModalName:{fontSize:15,fontWeight:700,flex:1,minWidth:0},
   icalModalKg:{fontSize:13,color:"var(--muted)"},
   icalModalRecv:{fontSize:11,fontWeight:700,color:"var(--ok)",background:"rgba(95,125,60,.15)",borderRadius:6,padding:"1px 7px"},
+  icalEditBtn:{flexShrink:0,border:"1px solid var(--line)",background:"#fff",color:"var(--accent)",borderRadius:7,padding:"5px 10px",fontSize:12,fontWeight:700,cursor:"pointer"},
+  icalEditForm:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:9,padding:"8px 10px",margin:"0 0 6px"},
+  icalEditRow:{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap",marginBottom:6},
+  icalEditLbl:{display:"flex",flexDirection:"column",gap:3,fontSize:12,fontWeight:700,color:"var(--muted)",flex:1,minWidth:0},
+  icalEditInput:{padding:"7px 8px",border:"1px solid var(--line)",borderRadius:8,fontSize:15,background:"#fff",color:"var(--ink)"},
+  icalEditSave:{border:"none",background:"var(--accent)",color:"#fff",borderRadius:8,padding:"7px 16px",fontSize:13,fontWeight:700,cursor:"pointer"},
   weekRow:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:4},
   weekCell:{textAlign:"center",fontSize:12,fontWeight:700,padding:"2px 0"},
   calGrid:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4},

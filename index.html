@@ -849,7 +849,7 @@ function App(){
             }
           }
           const fmtDate=(d)=>{ if(!d) return "—"; const dt=new Date(d); const days=Math.floor((Date.now()-dt.getTime())/86400000); return `${d}（${days===0?"今日":days===1?"昨日":days+"日前"}）`; };
-          const fmtShort=(d)=>{ if(!d) return "—"; const dt=new Date(d); const days=Math.floor((Date.now()-dt.getTime())/86400000); return `${days===0?"今日":days===1?"昨日":days+"日前"}`; };
+          const fmtShort=(d)=>{ if(!d) return "—"; const dt=new Date(d); const days=Math.floor((Date.now()-dt.getTime())/86400000); const rel=days===0?"今日":days===1?"昨日":days+"日前"; return `${d.slice(5).replace("-","/")}（${rel}）`; };
           return (<div style={S.headerStatus}>
             {FARMS.map(f=>(
               <span key={f.id} style={S.headerStatusItem}>📋 {f.name}: <b>{lastStockByFarm[f.id]?fmtShort(lastStockByFarm[f.id]):"—"}</b></span>
@@ -2068,6 +2068,7 @@ function VerticalTable({items,allScope,ymStr,shownItemIds,onChangeShown}){
         {cell.before?"":fmt(Math.round(cell.kg))}
         {trend&&<span style={{color:trend.col,marginLeft:3,fontSize:11}}>{trend.mark}</span>}
       </span>
+      {cell.anchor&&<span style={{...S.vtArrival,color:"var(--ok)"}}>📋棚卸</span>}
       {cell.info&&<span style={{...S.vtArrival,color:cell.info.anyTentative?"var(--warn)":"var(--accent)"}}>{cell.info.anyTentative?"🧪仮":(cell.info.anyReceived&&!cell.info.anyPending?"✓":"📦")}+{fmt(Math.round(cell.info.kg))}</span>}
     </td>);
   };
@@ -2164,6 +2165,8 @@ function MonthGrid({item,scope,ymStr,large}){
         const dayCol=dow===0?"var(--bad)":dow===6?"#3a6ea5":"var(--muted)";
         const inf=c.info; return (<div key={c.day} style={{...cellStyle,background:bg,outline:isT?"2px solid var(--accent)":"none"}}>
           <span style={{...S.dayNum,fontSize:large?11:9,color:dayCol,fontWeight:dow===0||dow===6?700:400}}>{c.day}</span>
+          {c.anchor&&large&&<span style={{...S.arrowMark,color:"var(--ok)"}}>📋棚卸</span>}
+          {c.anchor&&!large&&<span style={{...S.arrowMark,color:"var(--ok)",fontSize:8}}>📋</span>}
           {inf&&large&&<span style={{...S.arrowMark,color:inf.anyTentative?"var(--warn)":(inf.anyReceived&&!inf.anyPending?"var(--ok)":"var(--accent)")}}>{inf.anyTentative?"🧪仮入荷":(inf.anyReceived&&!inf.anyPending?"✓入荷":"📦入荷")}</span>}
           {inf&&!large&&<span style={{...S.arrowMark,color:inf.anyTentative?"var(--warn)":(inf.anyReceived&&!inf.anyPending?"var(--ok)":"var(--accent)"),fontSize:8}}>{inf.anyTentative?"🧪":"📦"}</span>}
           <span style={{...S.dayKg,color:col,fontSize:large?12:9.5}}>{c.before?"":fmt(Math.round(c.kg))}</span>

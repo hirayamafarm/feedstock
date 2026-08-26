@@ -140,6 +140,12 @@ function daysAndEndDate(monthsLeft){
   const endLabel=`${d.getMonth()+1}/${d.getDate()}`;
   return {days,endLabel};
 }
+// 残り日数を「今の在庫」と「発注残込み」に分けて表示。発注残が無ければ1つだけ。
+function RemainDays({monthsLeftStock,monthsLeft,pending}){
+  const rs=daysAndEndDate(monthsLeftStock); const r=daysAndEndDate(monthsLeft);
+  if(!(pending>0)) return <>残り <b>{r.days!=null?`${r.days}日`:"—"}</b>{r.endLabel?`（${r.endLabel}まで）`:""}</>;
+  return <>残り 今の在庫 <b>{rs.days!=null?`${rs.days}日`:"—"}</b> ／ 発注残込み <b>{r.days!=null?`${r.days}日`:"—"}</b>{r.endLabel?`（${r.endLabel}まで）`:""}</>;
+}
 
 // 農場ごとの色（背景・アクセント・タグ）
 function farmColor(fid){
@@ -328,13 +334,14 @@ function analyze(item){
   }
   // 発注残は「入荷予定日が今日より未来」のもの全て(未入荷/入荷済問わず。確定した入荷予定は必ず計算に入れる)
   const pendingKg=orders.filter(o=>o.etaDate>todayStr).reduce((s,o)=>s+o.kg,0);
-  let suggestedOrder=null, monthsLeft=null;
+  let suggestedOrder=null, monthsLeft=null, monthsLeftStock=null;
   if(hasUsage&&totalUsage>0){
     const eff=totalStock+pendingKg; monthsLeft=eff/totalUsage;
+    monthsLeftStock=totalStock/totalUsage; // 今の在庫だけ（発注残を含めない）
     const need=totalUsage*(1+(item.reserveMonths||0));
     suggestedOrder=Math.max(0,Math.ceil(need-eff));
   }
-  return { totalStock,pendingKg,totalUsage:hasUsage?totalUsage:null,monthsLeft,suggestedOrder,hasExcel };
+  return { totalStock,pendingKg,totalUsage:hasUsage?totalUsage:null,monthsLeft,monthsLeftStock,suggestedOrder,hasExcel };
 }
 // 各農場ごとに在庫・消費・残月数・追加発注を出す（参考表示用）
 function analyzeByFarm(item){
@@ -376,9 +383,9 @@ function analyzeByFarm(item){
       return s+o.kg;
     },0);
     const usage=fs.usage||0;
-    let suggested=null, monthsLeft=null;
-    if(usage>0){ const eff=stock+pending; monthsLeft=eff/usage; const need=usage*(1+(item.reserveMonths||0)); suggested=Math.max(0,Math.ceil(need-eff)); }
-    out[fid]={stock,usage,pending,monthsLeft,suggested,hasUsage:fs.usage!=null,hasExcel:fs.source==="excel", receivedSince};
+    let suggested=null, monthsLeft=null, monthsLeftStock=null;
+    if(usage>0){ const eff=stock+pending; monthsLeft=eff/usage; monthsLeftStock=stock/usage; const need=usage*(1+(item.reserveMonths||0)); suggested=Math.max(0,Math.ceil(need-eff)); }
+    out[fid]={stock,usage,pending,monthsLeft,monthsLeftStock,suggested,hasUsage:fs.usage!=null,hasExcel:fs.source==="excel", receivedSince};
   }
   return out;
 }
@@ -627,36 +634,32 @@ function IncomingCalendarView({items,colors,onSetColor}){
 function UsageView({items,onSelect}){
   const sorted=[...items].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
   return (<div style={S.fade}>
-    <h2 style={S.h2}>使用量</h2>
-    <div style={S.lead}>餌ごとの農場別「1日使用量」と「月間使用量(1日×30)」の一覧です。棚卸しまたはExcelの実績から算出し、別給与(上乗せ分)を含みます。</div>
+    <h2 style={S.h2}>使用量・在庫</h2>
+    <div style={S.lead}>餌ごとの農場別「使用量(1日／月)」と「現在庫・残り日数(今の在庫だけ／発注残込み)」の一覧です。棚卸しまたはExcelの実績から算出し、別給与を含みます。</div>
     {sorted.length===0?<div style={S.empty}>餌が登録されていません。先に「棚卸し」や「設定」から餌を登録してください。</div>:
       sorted.map(it=>{
-        const u=unitOf(it);
-        const rows=(it.farms||[]).map(fid=>({fid,name:FARMS.find(f=>f.id===fid)?.name||fid,st:farmStats(it,fid)}));
+        const u=unitOf(it); const sm=stockModeOf(it);
+        const bf=sm!=="shared"?analyzeByFarm(it):null;
+        const anShared=sm==="shared"?analyze(it):null;
+        const rows=(it.farms||[]).map(fid=>({fid,name:FARMS.find(f=>f.id===fid)?.name||fid,st:farmStats(it,fid),b:bf?bf[fid]:null}));
         const anyData=rows.some(r=>r.st.dailyKg!=null);
         const totDaily=rows.reduce((s,r)=>s+(r.st.dailyKg||0),0);
         return (<div key={it.id} style={S.usageCard}>
           <div style={S.usageHead}>
-            <button style={S.usageNameBtn} onClick={()=>onSelect(it.id)}>{it.name}{stockModeOf(it)==="shared"&&<span style={S.sharedBadge}>共通</span>}<span style={S.usageChevron}>›</span></button>
+            <button style={S.usageNameBtn} onClick={()=>onSelect(it.id)}>{it.name}{sm==="shared"&&<span style={S.sharedBadge}>共通</span>}<span style={S.usageChevron}>›</span></button>
             {anyData&&<span style={S.usageTotal}>合計 1日 {fmt(totDaily)}{u}／月 {fmt(totDaily*30)}{u}</span>}
           </div>
-          <table style={S.usageTable}>
-            <thead><tr>
-              <th style={{...S.usageTh,textAlign:"left"}}>農場</th>
-              <th style={S.usageTh}>1日使用量</th>
-              <th style={S.usageTh}>月間使用量</th>
-            </tr></thead>
-            <tbody>
-              {rows.map(r=>{ const d=r.st.dailyKg, mo=r.st.usage;
-                const src=r.st.source==="excel"?"Excel":r.st.source==="count"?"棚卸し":r.st.source==="extra"?"別給与":null;
-                return (<tr key={r.fid}>
-                  <td style={S.usageTdName}>{r.name}{src&&<span style={S.usageSrc}>{src}</span>}</td>
-                  <td style={S.usageTd}>{d!=null?<>{fmt(d)}<span style={S.usageUnit}>{u}</span></>:"—"}</td>
-                  <td style={S.usageTd}>{mo!=null?<><b>{fmt(mo)}</b><span style={S.usageUnit}>{u}</span></>:"—"}</td>
-                </tr>);
-              })}
-            </tbody>
-          </table>
+          {rows.map(r=>{ const d=r.st.dailyKg, mo=r.st.usage;
+            const src=r.st.source==="excel"?"Excel":r.st.source==="count"?"棚卸し":r.st.source==="extra"?"別給与":null;
+            return (<div key={r.fid} style={S.usageFarmBlock}>
+              <div style={S.usageFarmLine}>
+                <span style={S.usageFarmName}>{r.name}{src&&<span style={S.usageSrc}>{src}</span>}</span>
+                <span style={S.usageFarmUse}>1日 <b>{d!=null?fmt(d):"—"}</b>{u}／月 <b>{mo!=null?fmt(mo):"—"}</b>{u}</span>
+              </div>
+              {r.b&&r.b.hasUsage&&<div style={S.usageStockLine}>在庫 <b>{fmt(r.b.stock)}{u}</b>{r.b.pending>0?`＋発注残${fmt(Math.round(r.b.pending))}${u}`:""} ・ <RemainDays monthsLeftStock={r.b.monthsLeftStock} monthsLeft={r.b.monthsLeft} pending={r.b.pending}/></div>}
+            </div>);
+          })}
+          {sm==="shared"&&anShared&&anShared.monthsLeft!=null&&<div style={S.usageStockLine}>共通在庫 <b>{fmt(anShared.totalStock)}{u}</b>{anShared.pendingKg>0?`＋発注残${fmt(anShared.pendingKg)}${u}`:""} ・ <RemainDays monthsLeftStock={anShared.monthsLeftStock} monthsLeft={anShared.monthsLeft} pending={anShared.pendingKg}/></div>}
         </div>);
       })
     }
@@ -889,7 +892,7 @@ function App(){
           {moreOpen&&(<>
             <div style={S.menuOverlay} onClick={()=>setMoreOpen(false)}/>
             <div style={S.bnMore}>
-              {[{id:"usage",icon:"usage",label:"使用量"},{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
+              {[{id:"usage",icon:"usage",label:"使用量・在庫"},{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
                 <button key={t.id} style={{...S.bnMoreItem,...(view===t.id?{color:"var(--accent)"}:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
                   <NavIcon name={t.icon} size={20}/> {t.label}
                 </button>
@@ -1201,18 +1204,18 @@ function QuickAddPanel({items, onAddOrder, onSelect, onToggleReceived, onDelOrde
 
       {/* 現状表示: 共通モードは合計のみ、農場別モードは農場別 */}
       {sm==="shared"?(
-        an.totalUsage!=null?(()=>{ const r=daysAndEndDate(an.monthsLeft); return (
+        an.totalUsage!=null?(
           <div style={S.quickStatus}>
-            📊 共通在庫: <b>{fmt(an.totalStock)}{u}</b>{an.pendingKg>0&&` + 発注残${fmt(an.pendingKg)}${u}`} ・ 残り <b>{r.days!=null?`${r.days}日`:"—"}</b>{r.endLabel&&` (${r.endLabel}まで)`}{an.totalUsage>0&&` ・ 月${fmt(Math.round(an.totalUsage))}${u}`}
+            📊 共通在庫: <b>{fmt(an.totalStock)}{u}</b>{an.pendingKg>0&&` + 発注残${fmt(an.pendingKg)}${u}`} ・ <RemainDays monthsLeftStock={an.monthsLeftStock} monthsLeft={an.monthsLeft} pending={an.pendingKg}/>{an.totalUsage>0&&` ・ 月${fmt(Math.round(an.totalUsage))}${u}`}
             {an.suggestedOrder>0&&<span style={{color:"var(--bad)",fontWeight:700,marginLeft:8}}>追加目安 {fmt(an.suggestedOrder)}{u}</span>}
-          </div>); })():<div style={{...S.miniNote,marginTop:4}}>消費量未計算（棚卸しがもう一度必要）</div>
+          </div>):<div style={{...S.miniNote,marginTop:4}}>消費量未計算（棚卸しがもう一度必要）</div>
       ):(
         <div style={S.byFarmQuick}>
-          {item.farms.map(fid=>{ const b=byFarm?.[fid]; if(!b) return null; const fn=FARMS.find(f=>f.id===fid)?.name||fid; const fc=farmColor(fid); const r=daysAndEndDate(b.monthsLeft);
+          {item.farms.map(fid=>{ const b=byFarm?.[fid]; if(!b) return null; const fn=FARMS.find(f=>f.id===fid)?.name||fid; const fc=farmColor(fid);
             return (<div key={fid} style={{...S.byFarmQuickRow,background:fc.bg,borderLeft:`3px solid ${fc.accent}`}}>
               <span style={{...S.byFarmQuickName,color:fc.accent}}>{fn}</span>
               <span style={S.byFarmQuickStat}>
-                在庫 <b>{fmt(b.stock)}</b>{u}{b.pending>0&&` + 発注残${fmt(Math.round(b.pending))}${u}`} ・ 残り <b>{r.days!=null?`${r.days}日`:"—"}</b>{r.endLabel&&` (${r.endLabel}まで)`}{b.usage>0&&` ・ 月${fmt(Math.round(b.usage))}${u}`}
+                在庫 <b>{fmt(b.stock)}</b>{u}{b.pending>0&&` + 発注残${fmt(Math.round(b.pending))}${u}`} ・ <RemainDays monthsLeftStock={b.monthsLeftStock} monthsLeft={b.monthsLeft} pending={b.pending}/>{b.usage>0&&` ・ 月${fmt(Math.round(b.usage))}${u}`}
                 {b.suggested>0&&<span style={{color:"var(--bad)",fontWeight:700,marginLeft:6}}>追加目安 {fmt(b.suggested)}{u}</span>}
               </span>
             </div>); })}
@@ -1420,7 +1423,7 @@ function SharedPlanList({items, openId, setOpenId, onSelect, onAddOrder, warning
     <div className="order-grid">
     {rows.map(({it,an})=>{
       const u=unitOf(it);
-      const r=daysAndEndDate(an.monthsLeft);
+      const r=daysAndEndDate(an.monthsLeft); const rs=daysAndEndDate(an.monthsLeftStock);
       const isOpen=openId===it.id;
       const need=an.suggestedOrder>0;
       return (<div key={it.id} style={{...S.card,borderLeft:`4px solid ${need?"var(--bad)":"var(--ok)"}`,cursor:"default"}}>
@@ -1430,8 +1433,9 @@ function SharedPlanList({items, openId, setOpenId, onSelect, onAddOrder, warning
                :<span style={{...S.badge,color:"var(--ok)",background:"rgba(95,125,60,.13)"}}>充分</span>}
         </div>
         {an.totalUsage!=null?(<>
-          <div style={S.orderLine}><span style={S.orderLabel}>在庫日数</span>
+          <div style={S.orderLine}><span style={S.orderLabel}>在庫日数{an.pendingKg>0?"（発注残込み）":""}</span>
             <span style={S.orderNum}>{r.days!=null?r.days:"—"}<span style={S.orderUnit}>日</span></span></div>
+          {an.pendingKg>0&&<div style={{...S.cardMeta,marginTop:-2}}>今の在庫だけ: <b>{rs.days!=null?`${rs.days}日`:"—"}</b>{rs.endLabel?`（${rs.endLabel}まで）`:""}</div>}
           <div style={S.cardMeta}>{r.endLabel?`${r.endLabel}まで持つ見込み`:""} ・ 在庫 {fmt(an.totalStock)}{u}{an.pendingKg>0&&` ＋ 発注残 ${fmt(an.pendingKg)}${u}`} ・ 月消費 約{fmt(an.totalUsage)}{u}</div>
         </>):<div style={S.cardMeta}>棚卸しが1回のみ。もう1回入力すると消費量を計算します（在庫 {fmt(an.totalStock)}{u}）。</div>}
         <button style={S.quickToggle} onClick={()=>setOpenId(isOpen?null:it.id)}>{isOpen?"閉じる":"＋ 発注を追加"}</button>
@@ -1489,7 +1493,7 @@ function ByFarmPlanList({items, openId, setOpenId, onSelect, onAddOrder, warning
             const {fid,b}=cell;
             const u=unitOf(it);
             const need=b.suggested>0;
-            const r=daysAndEndDate(b.monthsLeft);
+            const r=daysAndEndDate(b.monthsLeft); const rs=daysAndEndDate(b.monthsLeftStock);
             const fn=FARMS.find(f=>f.id===fid)?.name||fid;
             const fc=farmColor(fid);
             const key=`${it.id}-${fid}`;
@@ -1504,8 +1508,9 @@ function ByFarmPlanList({items, openId, setOpenId, onSelect, onAddOrder, warning
                      :<span style={{...S.badge,color:"var(--ok)",background:"rgba(95,125,60,.13)"}}>充分</span>}
               </div>
               {b.hasUsage?(<>
-                <div style={S.orderLine}><span style={S.orderLabel}>在庫日数</span>
+                <div style={S.orderLine}><span style={S.orderLabel}>在庫日数{b.pending>0?"（発注残込み）":""}</span>
                   <span style={S.orderNum}>{r.days!=null?r.days:"—"}<span style={S.orderUnit}>日</span></span></div>
+                {b.pending>0&&<div style={{...S.cardMeta,marginTop:-2}}>今の在庫だけ: <b>{rs.days!=null?`${rs.days}日`:"—"}</b>{rs.endLabel?`（${rs.endLabel}まで）`:""}</div>}
                 <div style={S.cardMeta}>{r.endLabel?`${r.endLabel}まで持つ見込み`:""} ・ 在庫 {fmt(b.stock)}{u}{b.pending>0&&` ＋ 発注残 ${fmt(Math.round(b.pending))}${u}`} ・ 月消費 約{fmt(b.usage)}{u}</div>
               </>):<div style={S.cardMeta}>消費量未計算（在庫 {fmt(b.stock)}{u}）</div>}
               <button style={S.quickToggle} onClick={()=>setOpenId(isOpen?null:key)}>{isOpen?"閉じる":"＋ 発注を追加"}</button>
@@ -2978,6 +2983,11 @@ const S={
   usageTdName:{textAlign:"left",fontSize:14,fontWeight:700,padding:"8px 6px",borderBottom:"1px solid var(--line)"},
   usageTd:{textAlign:"right",fontSize:15,padding:"8px 6px",borderBottom:"1px solid var(--line)",whiteSpace:"nowrap"},
   usageUnit:{fontSize:11.5,color:"var(--muted)",marginLeft:2},
+  usageFarmBlock:{padding:"8px 0",borderBottom:"1px solid var(--line)"},
+  usageFarmLine:{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:8,flexWrap:"wrap"},
+  usageFarmName:{fontSize:14,fontWeight:700},
+  usageFarmUse:{fontSize:13,color:"var(--ink)"},
+  usageStockLine:{fontSize:12.5,color:"var(--muted)",marginTop:3},
   usageSrc:{fontSize:10,fontWeight:700,color:"var(--muted)",background:"rgba(120,110,80,.1)",borderRadius:6,padding:"1px 6px",marginLeft:6,verticalAlign:"middle"},
   itemFilterRow:{display:"flex",flexWrap:"wrap",gap:6},
   itemFilterBtn:{padding:"5px 11px",border:"1px solid var(--line)",background:"#fff",borderRadius:14,fontSize:12.5,fontWeight:700,color:"var(--muted)"},

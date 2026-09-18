@@ -704,6 +704,7 @@ function UsageView({items,onSelect}){
                 <span style={S.usageFarmName}>{r.name}{src&&<span style={S.usageSrc}>{src}</span>}</span>
                 <span style={S.usageFarmUse}>1日 <b>{d!=null?fmt(d):"—"}</b>{u}／月 <b>{mo!=null?fmt(mo):"—"}</b>{u}</span>
               </div>
+              {it.menuPerHead&&it.menuPerHead[r.fid]>0&&<div style={S.usagePerHead}>メニュー 1頭1日あたり <b>{fmt(it.menuPerHead[r.fid])}kg</b></div>}
               {r.b&&r.b.hasUsage&&<div style={S.usageStockLine}>在庫 <b>{fmt(r.b.stock)}{u}</b>{r.b.pending>0?`＋発注残${fmt(Math.round(r.b.pending))}${u}`:""} ・ <RemainDays monthsLeftStock={r.b.monthsLeftStock} monthsLeft={r.b.monthsLeft} pending={r.b.pending}/></div>}
             </div>);
           })}
@@ -846,7 +847,7 @@ function App(){
     return s; },`発注予定編集: ${nameOf(id)}`);
   const addItem=(it)=>update(s=>{ s.items.push({...it,id:s.nextId,counts:{},orders:[]}); s.nextId++; return s; },`餌を追加: ${it.name}`);
   const editItem=(id,patch)=>update(s=>{ const it=s.items.find(i=>i.id===id); if(!it) return s;
-    it.name=patch.name; it.unitType=patch.unitType; it.stockMode=patch.stockMode; it.reserveMonths=patch.reserveMonths; it.farms=patch.farms; it.units=patch.units; it.excludeFromPlan=!!patch.excludeFromPlan; return s;
+    it.name=patch.name; it.unitType=patch.unitType; it.stockMode=patch.stockMode; it.reserveMonths=patch.reserveMonths; it.farms=patch.farms; it.units=patch.units; it.excludeFromPlan=!!patch.excludeFromPlan; it.menuPerHead=patch.menuPerHead||{}; return s;
   },`餌を編集: ${patch.name}`);
   const delItem=(id)=>update(s=>{ s.items=s.items.filter(i=>i.id!==id); return s; },`餌を削除: ${nameOf(id)}`);
   const applyFeedDaily=(id,fid,info)=>update(s=>{ const it=s.items.find(i=>i.id===id); it.feedDaily=it.feedDaily||{}; it.feedDaily[fid]=info; return s; },
@@ -2708,10 +2709,12 @@ function ItemForm({initial,onSave,onCancel,title}){
   const [farms,setFarms]=useState(initial?.farms?initial.farms.slice():["a","b"]);
   const [units,setUnits]=useState(initial?.units?initial.units.map(u=>({id:u.id,label:u.label,kg:String(u.kg)})):[{id:"u1",label:"",kg:""}]);
   const [excludeFromPlan,setExcludeFromPlan]=useState(!!initial?.excludeFromPlan);
+  const [menuPerHead,setMenuPerHead]=useState(()=>{ const m={}; const src=initial?.menuPerHead||{}; for(const k in src) m[k]=String(src[k]); return m; });
   const toggleFarm=(fid)=>setFarms(s=>s.includes(fid)?s.filter(x=>x!==fid):[...s,fid]);
   const setUnit=(i,k,v)=>setUnits(s=>s.map((u,idx)=>idx===i?{...u,[k]:v}:u));
   const addUnit=()=>setUnits(s=>[...s,{id:"u"+Date.now(),label:"",kg:""}]); const rmUnit=(i)=>setUnits(s=>s.filter((_,idx)=>idx!==i));
   const clean=units.filter(u=>u.label.trim()&&parseFloat(u.kg)>0).map(u=>({id:u.id,label:u.label.trim(),kg:parseFloat(u.kg)}));
+  const cleanMPH=(()=>{ const m={}; for(const fid of farms){ const v=parseFloat(menuPerHead[fid]); if(v>0) m[fid]=v; } return m; })();
   const ok=name.trim()&&farms.length>0;
   const uLabel=unitType==="piece"?"個":"kg";
   return (<div style={S.fade}>
@@ -2741,6 +2744,14 @@ function ItemForm({initial,onSave,onCancel,title}){
       <button style={S.smallGhost} onClick={addUnit}>＋ パターンを追加</button>
       {clean.length===0&&<div style={{...S.miniNote,marginTop:6}}>単位パターン未登録の場合、棚卸し画面では「{uLabel}直接入力」だけが使えます。</div>}
     </div>
+    <div style={S.field}><span style={S.fieldLabel}>餌メニューの1頭・1日あたり使用量（kg・任意）</span>
+      {farms.length===0?<div style={S.miniNote}>先に使用する農場を選んでください。</div>:
+        farms.map(fid=>(<div key={fid} style={S.unitEditRow}>
+          <span style={{flex:1.4,fontSize:14,fontWeight:700,color:"var(--ink)"}}>{FARMS.find(x=>x.id===fid)?.name}</span>
+          <input style={{...S.input,flex:1}} type="number" inputMode="decimal" placeholder="kg/頭・日" value={menuPerHead[fid]||""} onChange={e=>setMenuPerHead(s=>({...s,[fid]:e.target.value}))}/>
+        </div>))}
+      <div style={{...S.miniNote,marginTop:6}}>餌を作成するときの餌メニュー上の「1頭・1日あたりの給与量(kg)」です。実績の給餌量からの割り返しではありません。「使用量・在庫」ページに表示します。</div>
+    </div>
     <label style={S.field}><span style={S.fieldLabel}>安全在庫（翌月棚卸しに加えて確保する月数）</span><input style={S.input} type="number" inputMode="decimal" value={reserve} onChange={e=>setReserve(e.target.value)}/></label>
     <label style={{...S.field,display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"10px 12px",background:excludeFromPlan?"rgba(168,73,47,.06)":"transparent",border:excludeFromPlan?"1px solid rgba(168,73,47,.3)":"1px solid var(--line)",borderRadius:9}}>
       <input type="checkbox" checked={excludeFromPlan} onChange={e=>setExcludeFromPlan(e.target.checked)} style={{width:18,height:18,flexShrink:0}}/>
@@ -2749,7 +2760,7 @@ function ItemForm({initial,onSave,onCancel,title}){
         <div style={{fontSize:11.5,color:"var(--muted)",marginTop:2,lineHeight:1.4}}>在庫日数が少なくなっても上に上がってきません。「除外中」タブで確認・発注はできます。「いつ発注するか分からない/常時手元にある餌」におすすめ。</div>
       </span>
     </label>
-    <button style={{...S.primaryBtn,opacity:ok?1:0.5}} disabled={!ok} onClick={()=>onSave({name:name.trim(),unitType,stockMode,reserveMonths:parseFloat(reserve)||0,farms,units:clean,excludeFromPlan})}>{initial?"変更を保存":"登録する"}</button>
+    <button style={{...S.primaryBtn,opacity:ok?1:0.5}} disabled={!ok} onClick={()=>onSave({name:name.trim(),unitType,stockMode,reserveMonths:parseFloat(reserve)||0,farms,units:clean,excludeFromPlan,menuPerHead:cleanMPH})}>{initial?"変更を保存":"登録する"}</button>
   </div>);
 }
 function AddView({onSave,onCancel}){ return <ItemForm onSave={onSave} onCancel={onCancel} title="餌を追加"/>; }
@@ -3048,6 +3059,7 @@ const S={
   usageFarmName:{fontSize:14,fontWeight:700},
   usageFarmUse:{fontSize:13,color:"var(--ink)"},
   usageStockLine:{fontSize:12.5,color:"var(--muted)",marginTop:3},
+  usagePerHead:{fontSize:12,color:"var(--accent)",marginTop:2,fontWeight:600},
   usageSrc:{fontSize:10,fontWeight:700,color:"var(--muted)",background:"rgba(120,110,80,.1)",borderRadius:6,padding:"1px 6px",marginLeft:6,verticalAlign:"middle"},
   itemFilterRow:{display:"flex",flexWrap:"wrap",gap:6},
   itemFilterBtn:{padding:"5px 11px",border:"1px solid var(--line)",background:"#fff",borderRadius:14,fontSize:12.5,fontWeight:700,color:"var(--muted)"},

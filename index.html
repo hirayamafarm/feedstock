@@ -164,7 +164,10 @@ function unitOf(item){ return item?.unitType==="piece"?"個":"kg"; }
 // results: { farmId: { feedName: { to, daily:{date:kg} } } }。全農場・全餌の中で最も新しい変更日を返す（無ければ""）。
 // 変更＝(1)餌が期間途中で使われなくなった=やめた (2)餌が途中から使われ始めた=追加 (3)直近の量が以前と大きく違う=量変更。
 function detectMenuChangeDate(results){
-  let gEnd=""; for(const fid in results) for(const nm in results[fid]){ const t=results[fid][nm].to; if(t&&t>gEnd) gEnd=t; }
+  const todayStr=today();
+  // 期間末は「今日以前の使用があった最新日」。未来日付の空セル/誤読は無視する。
+  let gEnd=""; for(const fid in results) for(const nm in results[fid]){ const daily=results[fid][nm].daily||{};
+    for(const d in daily){ if(daily[d]>0&&d<=todayStr&&d>gEnd) gEnd=d; } }
   if(!gEnd) return "";
   const gEndD=new Date(gEnd+"T00:00:00");
   const dte=(s)=>Math.round((gEndD-new Date(s+"T00:00:00"))/86400000); // sから期間末までの日数
@@ -172,7 +175,7 @@ function detectMenuChangeDate(results){
   for(const fid in results){
     for(const nm in results[fid]){
       const daily=results[fid][nm].daily||{};
-      const ds=Object.keys(daily).filter(d=>daily[d]>0).sort();
+      const ds=Object.keys(daily).filter(d=>daily[d]>0&&d<=todayStr).sort(); // 今日以前のみ
       if(ds.length<3) continue;
       const last=ds[ds.length-1];
       // (1) やめた餌: 期間末より7日以上前に使用終了 → 終了翌日が変更日
@@ -186,9 +189,9 @@ function detectMenuChangeDate(results){
       if(cut!==ds[0]&&segLen>=3&&dte(cut)>=3){ cands.push(cut); } // 追加/量変更
     }
   }
-  if(!cands.length) return "";
-  cands.sort();
-  return cands[cands.length-1];
+  const valid=cands.filter(d=>d<=todayStr).sort(); // 未来日は基準にしない
+  if(!valid.length) return "";
+  return valid[valid.length-1];
 }
 // 入荷予定が「コンテナ」かどうかの推定。餌に「コンテナ」を含む単位があり、その量の9割以上ならコンテナ扱い。
 function isContainerOrder(item,o){

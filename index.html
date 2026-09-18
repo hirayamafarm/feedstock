@@ -160,6 +160,36 @@ function farmColor(fid){
 }
 
 function unitOf(item){ return item?.unitType==="piece"?"個":"kg"; }
+// 使用量Excelの解析結果から「直近の餌メニュー変更日」を自動検出する。
+// results: { farmId: { feedName: { to, daily:{date:kg} } } }。全農場・全餌の中で最も新しい変更日を返す（無ければ""）。
+// 変更＝(1)餌が期間途中で使われなくなった=やめた (2)餌が途中から使われ始めた=追加 (3)直近の量が以前と大きく違う=量変更。
+function detectMenuChangeDate(results){
+  let gEnd=""; for(const fid in results) for(const nm in results[fid]){ const t=results[fid][nm].to; if(t&&t>gEnd) gEnd=t; }
+  if(!gEnd) return "";
+  const gEndD=new Date(gEnd+"T00:00:00");
+  const dte=(s)=>Math.round((gEndD-new Date(s+"T00:00:00"))/86400000); // sから期間末までの日数
+  const cands=[];
+  for(const fid in results){
+    for(const nm in results[fid]){
+      const daily=results[fid][nm].daily||{};
+      const ds=Object.keys(daily).filter(d=>daily[d]>0).sort();
+      if(ds.length<3) continue;
+      const last=ds[ds.length-1];
+      // (1) やめた餌: 期間末より7日以上前に使用終了 → 終了翌日が変更日
+      if(dte(last)>=7){ const d=new Date(last+"T00:00:00"); d.setDate(d.getDate()+1); cands.push(d.toISOString().slice(0,10)); continue; }
+      // (2)(3) 直近の安定区間の開始を検出（末尾から、直近平均の±40%以内で続く範囲）
+      const recent=ds.slice(-Math.min(10,ds.length));
+      const mR=recent.reduce((s,d)=>s+daily[d],0)/recent.length;
+      let cut=ds[0];
+      for(let i=ds.length-1;i>=0;i--){ const v=daily[ds[i]]; if(mR>0&&Math.abs(v-mR)<=0.4*mR){ cut=ds[i]; } else break; }
+      const segLen=ds.filter(d=>d>=cut).length;
+      if(cut!==ds[0]&&segLen>=3&&dte(cut)>=3){ cands.push(cut); } // 追加/量変更
+    }
+  }
+  if(!cands.length) return "";
+  cands.sort();
+  return cands[cands.length-1];
+}
 // 入荷予定が「コンテナ」かどうかの推定。餌に「コンテナ」を含む単位があり、その量の9割以上ならコンテナ扱い。
 function isContainerOrder(item,o){
   const cu=(item?.units||[]).find(u=>/コンテナ/.test(u.label||""));
@@ -2251,6 +2281,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
   const [importMode,setImportMode]=useState("hirayama"); // hirayama | generic
   const [useRecent,setUseRecent]=useState(true); // true=直近15日平均、false=全期間平均
   const [menuChangeDate,setMenuChangeDate]=useState(""); // 餌メニュー変更日（基準日）。これ以降の使用日だけで平均する
+  const [menuAuto,setMenuAuto]=useState(""); // 自動検出した変更日（表示用。手動編集で解除）
   const [sheets,setSheets]=useState(null); const [sheetName,setSheetName]=useState("");
   const [farm,setFarm]=useState("a"); const [itemId,setItemId]=useState(items[0]?.id??null);
   const [dateCol,setDateCol]=useState(0); const [kgCol,setKgCol]=useState(1); const [headerRow,setHeaderRow]=useState(true); const [msg,setMsg]=useState("");
@@ -2275,7 +2306,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
     setSheets(null); setSheetName("");
     setHirayamaResults(null); setHirayamaDebug(null);
     setSheetFarmOverride(null); setShowDebug(false);
-    setSelectedTargets({}); setMsg(""); setMenuChangeDate("");
+    setSelectedTargets({}); setMsg(""); setMenuChangeDate(""); setMenuAuto("");
   };
 
   // 平山牧場フォーマット解析
@@ -2410,6 +2441,9 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
     setHirayamaDebug({sheets:debugSheets, assignment, perSheet:debug});
     if(!foundAny){ setMsg(`「${FARMS.map(f=>f.name).join("」「")}」に対応するシートが見つからないか、日付行が認識できませんでした。読み込めたシート: ${debugSheets.join(" / ")}。手動マッピングを試すか、開発者にこのメッセージを伝えてください。`); setHirayamaResults(null); return; }
     setHirayamaResults(results);
+    // 直近の餌メニュー変更を自動検出し、基準日に自動セット（未来の使用量=直近メニュー基準に）
+    const autoCut=detectMenuChangeDate(results);
+    if(autoCut){ setMenuChangeDate(autoCut); setMenuAuto(autoCut); } else { setMenuAuto(""); }
     const targets={};
     for(const [fid,feeds] of Object.entries(results)){
       for(const feedName of Object.keys(feeds)){
@@ -2610,9 +2644,10 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
       <div style={{...S.miniNote,marginTop:4}}>{useRecent?"直近15日のうち入力のある日だけの平均。未入力の日(0や空欄)は計算から省きます。":"取り込んだ全期間で入力のある日の平均。未入力の日は計算から省きます。"}</div>
       <div style={S.menuDateBox}>
         <span style={{fontSize:13,fontWeight:700}}>🍽 餌メニュー変更日</span>
-        <input type="date" style={S.exportDate} value={menuChangeDate} onChange={e=>setMenuChangeDate(e.target.value)}/>
-        {menuChangeDate&&<button style={S.cancelBtn} onClick={()=>setMenuChangeDate("")}>クリア</button>}
-        <div style={{...S.miniNote,flexBasis:"100%",marginTop:4}}>取込直前にメニューを変えた場合、この日を指定すると<b>その日以降の使用分だけ</b>で平均します。指定日以降に使用が無い餌は「やめた餌」として<b>使用量0</b>で反映します。</div>
+        <input type="date" style={S.exportDate} value={menuChangeDate} onChange={e=>{ setMenuChangeDate(e.target.value); setMenuAuto(""); }}/>
+        {menuChangeDate&&<button style={S.cancelBtn} onClick={()=>{ setMenuChangeDate(""); setMenuAuto(""); }}>クリア</button>}
+        {menuAuto&&menuChangeDate===menuAuto&&<span style={{fontSize:12,fontWeight:700,color:"var(--accent)",background:"rgba(95,125,60,.12)",borderRadius:6,padding:"2px 8px"}}>🔍 自動検出</span>}
+        <div style={{...S.miniNote,flexBasis:"100%",marginTop:4}}>{menuAuto?<><b>直近のメニュー変更を自動検出しました（{menuAuto.replace(/-/g,"/")}）。</b>これ以降の給餌履歴だけで「未来の使用量」を平均します。違う場合は日付を変更、無ければクリアしてください。</>:<>取込直前にメニューを変えた場合、この日を指定すると<b>その日以降の使用分だけ</b>で平均します。指定日以降に使用が無い餌は「やめた餌」として<b>使用量0</b>で反映します。</>}</div>
       </div>
       {Object.entries(hirayamaResults).map(([fid,feeds])=>(<div key={fid} style={{marginTop:14}}>
         <div style={{fontWeight:700,fontSize:14,marginBottom:6,color:"var(--accent)"}}>{FARMS.find(f=>f.id===fid)?.name}</div>

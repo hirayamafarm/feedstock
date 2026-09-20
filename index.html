@@ -2428,12 +2428,14 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
       }
 
       const farmRes={};
+      const tdParse=today();
       for(const [name,daily] of Object.entries(feedDaily)){
-        const ds=Object.keys(daily).filter(d=>daily[d]>0).sort();
-        if(ds.length===0) continue;
+        const allDs=Object.keys(daily).filter(d=>daily[d]>0).sort();
+        if(allDs.length===0) continue;
+        const ds=allDs.filter(d=>d<=tdParse); // 平均・表示は今日以前の実績のみ（未来の予定は使わない）
         const total=ds.reduce((s,d)=>s+daily[d],0);
-        const from=ds[0], to=ds[ds.length-1];
-        const dailyKgAll=total/ds.length;
+        const from=ds[0]||allDs[0], to=ds[ds.length-1]||from;
+        const dailyKgAll=ds.length?total/ds.length:0;
         const cut=new Date(new Date(to)-14*86400000).toISOString().slice(0,10);
         const recentDs=ds.filter(d=>d>=cut);
         const recentTotal=recentDs.reduce((s,d)=>s+daily[d],0);
@@ -2461,8 +2463,9 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
   // 基準日(メニュー変更日)と直近トグルを反映した実効値を計算。
   // 基準日以降に使用がある日だけで平均。基準日以降の使用が無い餌は removed=true（＝やめた餌→日量0）。
   const effInfo=(info)=>{
+    const td=today();
     const src=info.daily||{};
-    let ds=Object.keys(src).filter(d=>src[d]>0).sort();
+    let ds=Object.keys(src).filter(d=>src[d]>0&&d<=td).sort(); // 実績のある「今日以前」の日だけ（未来の予定・未入力日は平均に使わない）
     if(menuChangeDate) ds=ds.filter(d=>d>=menuChangeDate);
     if(useRecent&&ds.length){ const last=ds[ds.length-1]; const cut=new Date(new Date(last)-14*86400000).toISOString().slice(0,10); ds=ds.filter(d=>d>=cut); }
     if(ds.length===0) return {dailyKg:0, removed:true, from:menuChangeDate||info.from, to:info.to, days:0, total:0};
@@ -2533,8 +2536,9 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
   const toDate=(v)=>{ if(v==null) return null; if(v instanceof Date) return v.toISOString().slice(0,10); const d=new Date(String(v).trim()); return isNaN(d)?null:d.toISOString().slice(0,10); };
   const compute=()=>{
     const data=headerRow?rows.slice(1):rows;
+    const td=today();
     const rowsArr=[]; // {date, kg}
-    for(const r of data){ const d=toDate(r[dateCol]); const kg=parseFloat(String(r[kgCol]).replace(/[^0-9.\-]/g,"")); if(d&&!isNaN(kg)&&kg>0) rowsArr.push({date:d,kg}); }
+    for(const r of data){ const d=toDate(r[dateCol]); const kg=parseFloat(String(r[kgCol]).replace(/[^0-9.\-]/g,"")); if(d&&d<=td&&!isNaN(kg)&&kg>0) rowsArr.push({date:d,kg}); }
     if(rowsArr.length===0) return null;
     rowsArr.sort((a,b)=>a.date.localeCompare(b.date));
     const from=rowsArr[0].date, to=rowsArr[rowsArr.length-1].date;
@@ -2645,7 +2649,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
         <button style={{...S.modeTab,...(useRecent?S.modeActive:{})}} onClick={()=>setUseRecent(true)}>直近15日の平均</button>
         <button style={{...S.modeTab,...(!useRecent?S.modeActive:{})}} onClick={()=>setUseRecent(false)}>全期間の平均</button>
       </div>
-      <div style={{...S.miniNote,marginTop:4}}>{useRecent?"直近15日のうち入力のある日だけの平均。未入力の日(0や空欄)は計算から省きます。":"取り込んだ全期間で入力のある日の平均。未入力の日は計算から省きます。"}</div>
+      <div style={{...S.miniNote,marginTop:4}}>{useRecent?"今日以前・直近15日のうち入力のある日だけの平均。未入力の日(0や空欄)と今日より先の予定分は計算から省きます。":"今日以前で入力のある日の平均。未入力の日と今日より先の予定分は計算から省きます。"}</div>
       <div style={S.menuDateBox}>
         <span style={{fontSize:13,fontWeight:700}}>🍽 餌メニュー変更日</span>
         <input type="date" style={S.exportDate} value={menuChangeDate} onChange={e=>{ setMenuChangeDate(e.target.value); setMenuAuto(""); }}/>

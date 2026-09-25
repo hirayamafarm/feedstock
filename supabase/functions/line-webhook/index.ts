@@ -314,6 +314,20 @@ async function handleEvents(payload) {
       const findFarm = (id) => farms.find(f => f.id === id);
       const findItem = (nm) => (state.items || []).find(i => i.name === nm)
         || (state.items || []).find(i => (i.lineAliases || []).includes(nm));
+      // 棚卸し当日(=同日)の入荷で、まだ「棚卸し後到着(arrivedAfterCount)」の指定が無いものを集める
+      const collectSameDayDeliveries = (itemObjs, fid, d) => {
+        const out = [], seen = new Set();
+        for (const item of itemObjs) {
+          if (!item || seen.has(item.id)) continue; seen.add(item.id);
+          for (const o of (item.orders || [])) {
+            if (o.etaDate === d && !o.arrivedAfterCount) {
+              const ff = o.forFarm || "shared";
+              if (ff === fid || ff === "shared") out.push({ item_id: item.id, order_id: o.id, name: item.name, kg: o.kg });
+            }
+          }
+        }
+        return out;
+      };
 
       const sessRows = await sbGet(SB_URL, SB_KEY, `line_session?source_id=eq.${encodeURIComponent(srcId)}&select=*`);
       let session = (sessRows && sessRows[0]) || null;
@@ -324,6 +338,45 @@ async function handleEvents(payload) {
       if (session?.farm_id && session?.farm_set_at) {
         const ageMin = (Date.now() - new Date(session.farm_set_at).getTime()) / 60000;
         if (ageMin <= SESSION_TTL_MIN) sessionFarm = session.farm_id;
+      }
+
+      // ── 「棚卸し当日の入荷を加算しますか？」への返信を処理（グループ/DM共通） ──
+      if (session?.pending && !Array.isArray(session.pending) && session.pending.ask === "delivery") {
+        const ask = session.pending;
+        const neg = /なし|いいえ|いらない|加算しない|追加しない|しない|不要/.test(text);
+        const all = !neg && /両方|りょうほう|全部|ぜんぶ|すべて|全て|全部とも|両方とも|はい|ＯＫ|OK|ok|お願い|おねがい/.test(text);
+        let picks = [];
+        if (all) picks = ask.list.slice();
+        else if (!neg) {
+          for (const d of ask.list) {
+            const item = (state.items || []).find(i => i.id === d.item_id);
+            const names = [d.name, ...((item?.lineAliases) || [])].filter(Boolean);
+            if (names.some(nm => text.includes(nm))) picks.push(d);
+          }
+        }
+        const looksLikeAnswer = neg || all || picks.length > 0;
+        if (looksLikeAnswer) {
+          if (picks.length) {
+            for (const d of picks) {
+              const item = (state.items || []).find(i => i.id === d.item_id);
+              const o = item?.orders?.find(x => x.id === d.order_id);
+              if (o) o.arrivedAfterCount = true;
+            }
+            await fetch(`${SB_URL}/rest/v1/app_state?id=eq.${STATE_ID}`, {
+              method: "PATCH", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+              body: JSON.stringify({ data: state, updated_at: new Date().toISOString() }),
+            });
+          }
+          await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: null, updated_at: new Date().toISOString() });
+          const m = picks.length
+            ? `📦 棚卸し当日の入荷を在庫に加算しました：\n` + picks.map(d => `・${d.name}（${fmt(d.kg)}kg）`).join("\n") + `\n（棚卸し時にまだ届いていなかった分として計算します）`
+            : "了解しました。同日の入荷は在庫に加算しません（棚卸し時に既に届いていた前提）。";
+          await say(TOKEN, replyToken, srcId, m);
+          continue;
+        }
+        // 返信に見えない（別の用件）→ 質問は取り下げて通常処理へフォールスルー
+        session.pending = null;
+        await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: null, updated_at: new Date().toISOString() });
       }
 
       // ── 1対1（グループ以外）= 入荷予定の転記 / 在庫問い合わせ ──
@@ -347,7 +400,9 @@ async function handleEvents(payload) {
             // 棚卸し日〜今日に到来した入荷を加算
             let recv = 0;
             for (const o of (item.orders || [])) {
-              if (!fs.lastDate || o.etaDate <= fs.lastDate || o.etaDate > today) continue;
+              if (!fs.lastDate || o.etaDate > today) continue;
+              if (o.etaDate < fs.lastDate) continue;
+              if (o.etaDate === fs.lastDate && !o.arrivedAfterCount) continue; // 棚卸し当日の入荷は後到着指定のみ加算
               const ff = o.forFarm || "shared";
               if (ff === fid) recv += o.kg;
               else if (ff === "shared") {
@@ -478,9 +533,23 @@ async function handleEvents(payload) {
             method: "PATCH", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
             body: JSON.stringify({ data: state, updated_at: new Date().toISOString() }),
           });
-          await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: null, updated_at: new Date().toISOString() });
+          // 記録した餌に「棚卸し当日の入荷」があれば、続けて加算確認を出す
+          const dList = [], seenOrder = new Set();
+          for (const x of pend) {
+            const item = (state.items || []).find(i => i.id === x.item_id);
+            const d = (x.date && /^\d{4}-\d{2}-\d{2}$/.test(x.date)) ? x.date : jstToday();
+            for (const o of (item?.orders || [])) {
+              if (o.etaDate === d && !o.arrivedAfterCount && !seenOrder.has(o.id)) {
+                const ff = o.forFarm || "shared";
+                if (ff === x.farm_id || ff === "shared") { seenOrder.add(o.id); dList.push({ item_id: item.id, order_id: o.id, name: item.name, kg: o.kg }); }
+              }
+            }
+          }
+          const deliveryAsk = dList.length ? { ask: "delivery", date: pend[0]?.date || jstToday(), farm_id: pend[0]?.farm_id || null, list: dList } : null;
+          await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: deliveryAsk, updated_at: new Date().toISOString() });
           let cmsg = "✅ 確認分を記録しました：\n" + pend.map(x => { const dl = (x.date && x.date !== jstToday()) ? `（${x.date.slice(5).replace("-", "/")}分）` : ""; return `・${x.farmName} ${x.name}${dl}: ${x.unitLabel}` + diffLine(x.kg, x.predKg); }).join("\n");
           if (learned.length) cmsg += `\n\n📝 表記ゆれを記憶しました（次回から自動認識）\n` + learned.map(l => `・${l}`).join("\n");
+          if (deliveryAsk) { const names = deliveryAsk.list.map(d => d.name); cmsg += `\n\n📦 棚卸し当日に入荷予定があります：${names.join("・")}\n棚卸しのときにまだ届いていなかったものは在庫に加算します。加算するものを送ってください（例:「${names[0]}」「両方」「全部」「なし」）。`; }
           await say(TOKEN, replyToken, srcId, cmsg);
         } else {
           await say(TOKEN, replyToken, srcId, "確認待ちの項目がありませんでした。");
@@ -567,7 +636,7 @@ async function handleEvents(payload) {
 
         const farm = findFarm(farmId);
         const date = stDate;
-        const recorded = [], pending = [], errors = [], learned = [];
+        const recorded = [], recordedItems = [], pending = [], errors = [], learned = [];
 
         // ヘルパ: 餌の単位ラベル→unit定義
         const findUnit = (item, unitName) => {
@@ -658,6 +727,7 @@ async function handleEvents(payload) {
           } else {
             item.counts[farmId].push({ date, qtys });
             recorded.push({ name: item.name, unitLabel: label, kg, pred: predShow });
+            recordedItems.push(item);
             // 表記ゆれを学習（明確に記録できたものだけ）
             const a = learnAlias(item, row.raw, state.items || []);
             if (a) learned.push(`${a}→${item.name}`);
@@ -670,8 +740,16 @@ async function handleEvents(payload) {
             body: JSON.stringify({ data: state, updated_at: new Date().toISOString() }),
           });
         }
+        // 差異確認の保留があればそれを保存。無ければ、棚卸し当日の入荷があるか調べて「加算しますか？」を出す。
+        let deliveryAsk = null;
         if (pending.length) {
           await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending, updated_at: new Date().toISOString() });
+        } else {
+          const sameDay = collectSameDayDeliveries(recordedItems, farmId, date);
+          if (sameDay.length) {
+            deliveryAsk = { ask: "delivery", date, farm_id: farmId, list: sameDay };
+            await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: deliveryAsk, updated_at: new Date().toISOString() });
+          }
         }
 
         const dateLabel = date !== jstToday() ? `（${date.slice(5).replace("-", "/")}分）` : "";
@@ -688,6 +766,10 @@ async function handleEvents(payload) {
         }
         if (errors.length) { msg += `\n\n❌ ${errors.join(" / ")}`; }
         if (learned.length) { msg += `\n\n📝 表記ゆれを記憶しました（次回から自動認識）\n` + learned.map(l => `・${l}`).join("\n"); }
+        if (deliveryAsk) {
+          const names = deliveryAsk.list.map(d => d.name);
+          msg += `\n\n📦 棚卸し当日(${date.slice(5).replace("-", "/")})に入荷予定があります：${names.join("・")}\n棚卸しのときにまだ届いていなかったものは在庫に加算します。加算するものを送ってください（例:「${names[0]}」「両方」「全部」「なし」）。`;
+        }
         await say(TOKEN, replyToken, srcId, msg.trim());
         continue;
       }

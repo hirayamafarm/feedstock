@@ -64,7 +64,9 @@ function analyzeByFarm(item, today) {
     let receivedSince = 0;
     if (fs.lastDate) {
       for (const o of orders) {
-        if (o.etaDate <= fs.lastDate || o.etaDate > today) continue;
+        if (o.etaDate > today) continue;
+        if (o.etaDate < fs.lastDate) continue;
+        if (o.etaDate === fs.lastDate && !o.arrivedAfterCount) continue; // 棚卸し当日の入荷は後到着指定のみ加算
         const ff = orderForFarm(o);
         if (ff === fid) receivedSince += o.kg;
         else if (ff === "shared") {
@@ -115,7 +117,9 @@ function analyzeShared(item, today) {
   // 共通モードの入荷は全量加算（農場按分しない）
   for (const o of orders) {
     if (!anchorDate) break;
-    if (o.etaDate <= anchorDate || o.etaDate > today) continue;
+    if (o.etaDate > today) continue;
+    if (o.etaDate < anchorDate) continue;
+    if (o.etaDate === anchorDate && !o.arrivedAfterCount) continue; // 棚卸し当日の入荷は後到着指定のみ加算
     totalStock += o.kg;
   }
   if (totalDaily <= 0) return null;

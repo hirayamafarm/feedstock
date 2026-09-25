@@ -345,8 +345,10 @@ function analyze(item){
     let receivedSince=0;
     if(base.date){
       for(const o of orders){
-        // 入荷予定日が土台日より後〜今日以前
-        if(o.etaDate<=base.date||o.etaDate>todayStr) continue;
+        // 入荷予定日が土台日より後〜今日以前。土台日と同日の入荷は、棚卸し後に到着した指定(arrivedAfterCount)があるものだけ加算。
+        if(o.etaDate>todayStr) continue;
+        if(o.etaDate<base.date) continue;
+        if(o.etaDate===base.date&&!o.arrivedAfterCount) continue;
         const ff=orderForFarm(o);
         if(stockModeOf(item)==="shared"){ receivedSince+=o.kg/scopes.length; }
         else if(ff===fid){ receivedSince+=o.kg; }
@@ -388,7 +390,9 @@ function analyzeByFarm(item){
     let receivedSince=0;
     if(base.date){
       for(const o of orders){
-        if(o.etaDate<=base.date||o.etaDate>todayStr) continue;
+        if(o.etaDate>todayStr) continue;
+        if(o.etaDate<base.date) continue;
+        if(o.etaDate===base.date&&!o.arrivedAfterCount) continue; // 棚卸し当日の入荷は、棚卸し後到着の指定があるものだけ加算
         const ff=orderForFarm(o);
         if(ff===fid){ receivedSince+=o.kg; }
         else if(ff==="shared"){
@@ -561,7 +565,7 @@ function IncomingCalendarView({items,colors,onSetColor,onEditOrder,onDelOrder,on
   const [selDay,setSelDay]=useState(null);   // クリックした日(iso)
   const [showColors,setShowColors]=useState(false);
   const [farmFilter,setFarmFilter]=useState("all"); // 表示する拠点（デフォルト全部）
-  const [edId,setEdId]=useState(null); const [edKg,setEdKg]=useState(""); const [edDate,setEdDate]=useState(""); // 予定編集
+  const [edId,setEdId]=useState(null); const [edKg,setEdKg]=useState(""); const [edDate,setEdDate]=useState(""); const [edAfter,setEdAfter]=useState(false); // 予定編集
   const showEv=(e)=> farmFilter==="all"||e.farm===farmFilter;
   const [Y,M]=month.split("-").map(Number);
   const shift=(d)=>{ let y=Y,m=M+d; if(m<1){m=12;y--;} if(m>12){m=1;y++;} setMonth(`${y}-${String(m).padStart(2,"0")}`); };
@@ -575,6 +579,7 @@ function IncomingCalendarView({items,colors,onSetColor,onEditOrder,onDelOrder,on
       (byDate[o.etaDate]=byDate[o.etaDate]||[]).push({
         farm:o.forFarm||"shared", name:it.name, kg:o.kg, unit:unitOf(it),
         received:!!o.received, container:isContainerOrder(it,o), itemId:it.id, orderId:o.id,
+        arrivedAfterCount:!!o.arrivedAfterCount,
       });
     }
   }
@@ -658,15 +663,19 @@ function IncomingCalendarView({items,colors,onSetColor,onEditOrder,onDelOrder,on
                 <span style={{...S.icalModalName,...(e.received?{textDecoration:"line-through",color:"var(--muted)"}:{})}}>{e.name}</span>
                 <span style={S.icalModalKg}>{fmt(e.kg)}{e.unit}{e.container?"・コンテナ":""}</span>
                 {e.received&&<span style={S.icalModalRecv}>✓入荷済</span>}
-                {canEdit&&<button style={S.icalEditBtn} onClick={()=>{ if(editing){ setEdId(null); } else { setEdId(e.orderId); setEdKg(String(e.kg)); setEdDate(selDay); } }}>{editing?"閉":"変更"}</button>}
+                {canEdit&&<button style={S.icalEditBtn} onClick={()=>{ if(editing){ setEdId(null); } else { setEdId(e.orderId); setEdKg(String(e.kg)); setEdDate(selDay); setEdAfter(!!e.arrivedAfterCount); } }}>{editing?"閉":"変更"}</button>}
               </div>
               {editing&&(<div style={S.icalEditForm}>
                 <div style={S.icalEditRow}>
                   <label style={S.icalEditLbl}>入荷日<input type="date" style={S.icalEditInput} value={edDate} onChange={ev=>setEdDate(ev.target.value)}/></label>
                   <label style={S.icalEditLbl}>量({e.unit})<input type="number" inputMode="decimal" style={S.icalEditInput} value={edKg} onChange={ev=>setEdKg(ev.target.value)}/></label>
                 </div>
+                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12.5,color:"var(--ink)",padding:"4px 2px",cursor:"pointer"}}>
+                  <input type="checkbox" checked={edAfter} onChange={ev=>setEdAfter(ev.target.checked)} style={{width:16,height:16,flexShrink:0}}/>
+                  <span>棚卸し当日の分：棚卸し後に到着（在庫に加算）<br/><span style={{color:"var(--muted)",fontSize:11}}>同じ日の棚卸しに含まれていなかった入荷のときだけON。</span></span>
+                </label>
                 <div style={S.icalEditRow}>
-                  <button style={S.icalEditSave} onClick={()=>{ const kg=parseFloat(edKg); onEditOrder(e.itemId,e.orderId,{kg:isNaN(kg)?e.kg:kg,etaDate:edDate||selDay}); setEdId(null); setSelDay(null); }}>保存</button>
+                  <button style={S.icalEditSave} onClick={()=>{ const kg=parseFloat(edKg); onEditOrder(e.itemId,e.orderId,{kg:isNaN(kg)?e.kg:kg,etaDate:edDate||selDay,arrivedAfterCount:edAfter}); setEdId(null); setSelDay(null); }}>保存</button>
                   <button style={S.planTentBtn} onClick={()=>{ onToggleReceived&&onToggleReceived(e.itemId,e.orderId); setEdId(null); }}>{e.received?"未入荷に戻す":"入荷済みにする"}</button>
                   <button style={S.planDelBtn} onClick={()=>{ if(confirm("この入荷予定を削除しますか？")){ onDelOrder&&onDelOrder(e.itemId,e.orderId); setEdId(null); setSelDay(null); } }}>削除</button>
                 </div>
@@ -844,6 +853,7 @@ function App(){
     if(patch.kg!=null) o.kg=patch.kg;
     if(patch.etaDate!=null) o.etaDate=patch.etaDate;
     if(patch.forFarm!=null) o.forFarm=patch.forFarm;
+    if(patch.arrivedAfterCount!=null) o.arrivedAfterCount=!!patch.arrivedAfterCount;
     return s; },`発注予定編集: ${nameOf(id)}`);
   const addItem=(it)=>update(s=>{ s.items.push({...it,id:s.nextId,counts:{},orders:[]}); s.nextId++; return s; },`餌を追加: ${it.name}`);
   const editItem=(id,patch)=>update(s=>{ const it=s.items.find(i=>i.id===id); if(!it) return s;

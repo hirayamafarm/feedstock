@@ -152,7 +152,7 @@ function extractJson(data) {
   }
 }
 
-async function parseWithClaude(apiKey, text, farms, items) {
+async function parseWithClaude(apiKey, text, farms, items, todayStr) {
   // 別名＋単位リストを含む餌情報を作る
   const itemLines = items.map(i => {
     const al = (i.lineAliases || []).filter(Boolean);
@@ -161,18 +161,23 @@ async function parseWithClaude(apiKey, text, farms, items) {
     return `${i.name}（単位: ${us}${aliasStr}）`;
   }).join("\n");
   const sys = `あなたは牧場の棚卸しLINEを解析するアシスタント。メッセージを解析しJSONのみで返す。
+今日は ${todayStr}。
 農場候補: ${farms.map(f => `${f.name}(${f.id})`).join(", ")}
 餌リスト（単位と別名）:
 ${itemLines}
 
 返すJSON:
 {
- "intent": "stocktake" | "set_farm" | "confirm" | "other",
+ "intent": "stocktake" | "set_farm" | "confirm" | "cancel" | "other",
  "farm_id": "a"|"b"|null,
+ "date": "YYYY-MM-DD"|null,
  "items": [ {"item":"正式な餌名","raw":"メッセージに実際に書かれていた餌名（正規化前の元の表記）","units":[{"unit":"単位名","n":数値}],"uncertain":true|false} ],
- "confirm_yes": true|false
+ "confirm_yes": true|false,
+ "cancel_all": true|false
 }
 判定ルール:
+- 【棚卸し日】「9/20」「9月20日」「20日」「昨日」「一昨日」「先週の金曜」等の日付表現があれば date に YYYY-MM-DD で入れる。棚卸しは“今ある在庫を数える”ものなので、日付は今日(${todayStr})基準で「一番近い過去または今日」に解釈する（未来の日付にはしない）。日付表現が無ければ date=null（＝今日として扱う）。日付は棚卸しでも取消でも同じ規則で拾う。
+- 【取消/キャンセル】「〜の棚卸しを取り消し」「〜を削除」「〜キャンセル」「〜の記録を消して」など、記録の取り消しを求めている → intent="cancel"。対象の餌名を items に入れる（取消なので units/数量は不要、餌名だけでよい）。日付があれば date に。農場が分かれば farm_id に。「今日の棚卸しを全部取消」「本場の記録を全部消して」のように餌を特定せず全消しを求める場合は cancel_all=true（items は空でよい）。確認待ち（「はい」で確定する状態）に対する「いいえ」「やめる」「キャンセル」も intent="cancel"（items 空・cancel_all=false）。
 - 餌名と数量を含む → intent="stocktake"。各餌の数量を「単位ごと」に分解してunitsに入れる。
   例:「重曹 137個 パレット16」→ {"item":"重曹","units":[{"unit":"個","n":137},{"unit":"パレット","n":16}]}
   例:「スーダン 1コンテナと39個」→ {"item":"スーダン","units":[{"unit":"コンテナ","n":1},{"unit":"個","n":39}]}
@@ -190,6 +195,7 @@ ${itemLines}
 - 「塩」「しお」だけで搾乳塩かDRY塩か不明 → item名「塩(要確認)」。
 - 「本場の棚卸し」等の農場宣言だけ → intent="set_farm"、farm_id。
 - 「はい」「OK」等の肯定 → intent="confirm"、confirm_yes=true。
+- 「いいえ」「やめる」「キャンセル」等の否定・取り消し → intent="cancel"（items 空・cancel_all=false）。
 - 雑談 → intent="other"。
 JSONのみ返す。`;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -321,7 +327,10 @@ async function handleEvents(payload) {
       }
 
       // ── 1対1（グループ以外）= 入荷予定の転記 / 在庫問い合わせ ──
-      if (!isGroup) {
+      // ただし「棚卸し」「取消」「キャンセル」等の語があるDMは、入荷予定と誤認しないよう
+      // 入荷予定パーサをスキップして下の棚卸し処理へ回す（日付指定の棚卸し・取消をDMでも可能に）。
+      const forceStocktake = /棚卸|たなおろし|棚卸し|取消|取り消|とりけし|キャンセル/.test(text);
+      if (!isGroup && !forceStocktake) {
         const today = jstToday();
         const po = await parseOrderWithClaude(CLAUDE, text, farms, state.items || [], today);
         // DMでも棚卸しできるように: 入荷予定 or 在庫問い合わせ ならここで処理して終了。
@@ -443,8 +452,10 @@ async function handleEvents(payload) {
       }
 
       // ── 棚卸し処理（グループは常に／DMは入荷予定・問い合わせ以外のとき） ──
-      const p = await parseWithClaude(CLAUDE, text, farms, state.items || []);
+      const p = await parseWithClaude(CLAUDE, text, farms, state.items || [], jstToday());
       if (p.intent === "other") continue;
+      // 棚卸し日: 明示された日付があればそれを、無ければ今日
+      const stDate = (p.date && /^\d{4}-\d{2}-\d{2}$/.test(p.date)) ? p.date : jstToday();
 
       // 確認の「はい」
       if (p.intent === "confirm" && p.confirm_yes && session?.pending) {
@@ -454,7 +465,7 @@ async function handleEvents(payload) {
           for (const x of pend) {
             const item = (state.items || []).find(i => i.id === x.item_id); if (!item) continue;
             item.counts = item.counts || {}; item.counts[x.farm_id] = item.counts[x.farm_id] || [];
-            const date = jstToday();
+            const date = (x.date && /^\d{4}-\d{2}-\d{2}$/.test(x.date)) ? x.date : jstToday();
             // 同じ日付だけ上書き（別日の記録は残す）
             const ex = item.counts[x.farm_id].find(c => c.date === date);
             // x.qtys は既存＋新規を合算済み。今日の記録があれば置換、なければ追加。
@@ -468,12 +479,72 @@ async function handleEvents(payload) {
             body: JSON.stringify({ data: state, updated_at: new Date().toISOString() }),
           });
           await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: null, updated_at: new Date().toISOString() });
-          let cmsg = "✅ 確認分を記録しました：\n" + pend.map(x => `・${x.farmName} ${x.name}: ${x.unitLabel}` + diffLine(x.kg, x.predKg)).join("\n");
+          let cmsg = "✅ 確認分を記録しました：\n" + pend.map(x => { const dl = (x.date && x.date !== jstToday()) ? `（${x.date.slice(5).replace("-", "/")}分）` : ""; return `・${x.farmName} ${x.name}${dl}: ${x.unitLabel}` + diffLine(x.kg, x.predKg); }).join("\n");
           if (learned.length) cmsg += `\n\n📝 表記ゆれを記憶しました（次回から自動認識）\n` + learned.map(l => `・${l}`).join("\n");
           await say(TOKEN, replyToken, srcId, cmsg);
         } else {
           await say(TOKEN, replyToken, srcId, "確認待ちの項目がありませんでした。");
         }
+        continue;
+      }
+
+      // 棚卸しの取り消し（確認待ちの取消 or 記録済みの削除）
+      if (p.intent === "cancel") {
+        // 1) 餌の指定も全消し指定も無い「いいえ/キャンセル」→ 確認待ちを取り消す
+        if ((!Array.isArray(p.items) || !p.items.length) && !p.cancel_all) {
+          if (session?.pending) {
+            await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending: null, updated_at: new Date().toISOString() });
+            await say(TOKEN, replyToken, srcId, "🗑️ 確認待ちの棚卸しを取り消しました（記録していません）。");
+          } else {
+            await say(TOKEN, replyToken, srcId, "取り消す対象がありません。取り消したい餌名（例:「本場 チモシー 棚卸し取消」）や、日付・「今日の棚卸しを全部取消」のように送ってください。");
+          }
+          continue;
+        }
+        // 2) 記録済みの棚卸しを削除
+        let farmId = p.farm_id || sessionFarm || member?.farm_id || null;
+        if (!farmId) {
+          await say(TOKEN, replyToken, srcId, "❓ どちらの農場の棚卸しを取り消しますか？「本場」「赤坂」を付けて送り直してください。");
+          continue;
+        }
+        if (p.farm_id) await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, farm_id: p.farm_id, farm_set_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+        const farm = findFarm(farmId);
+        const shortD = (d) => String(d).slice(5).replace("-", "/");
+        const removed = [], notfound = [];
+        if (p.cancel_all) {
+          // その農場・指定日（既定=今日）の全餌の記録を削除
+          for (const item of (state.items || [])) {
+            const arr = item.counts?.[farmId];
+            if (!arr || !arr.length) continue;
+            const before = arr.length;
+            item.counts[farmId] = arr.filter(c => c.date !== stDate);
+            if (item.counts[farmId].length < before) removed.push(`${item.name}（${shortD(stDate)}）`);
+          }
+        } else {
+          for (const row of p.items) {
+            const item = findItem(row.item);
+            if (!item) { notfound.push(row.item); continue; }
+            const arr = item.counts?.[farmId];
+            if (!arr || !arr.length) { notfound.push(item.name); continue; }
+            // 指定日（既定=今日）の記録を削除。日付未指定でその日の記録が無ければ「最新の記録」を削除。
+            let target = -1;
+            for (let i = arr.length - 1; i >= 0; i--) { if (arr[i].date === stDate) { target = i; break; } }
+            if (target < 0 && !p.date) target = arr.length - 1;
+            if (target < 0) { notfound.push(`${item.name}（${shortD(stDate)}の記録なし）`); continue; }
+            const [rm] = arr.splice(target, 1);
+            removed.push(`${item.name}（${shortD(rm.date)}）`);
+          }
+        }
+        if (removed.length) {
+          await fetch(`${SB_URL}/rest/v1/app_state?id=eq.${STATE_ID}`, {
+            method: "PATCH", headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ data: state, updated_at: new Date().toISOString() }),
+          });
+        }
+        let cmsg = "";
+        if (removed.length) cmsg += `🗑️ 棚卸しを取り消しました（${removed.length}件）\n【${farm?.name}】\n` + removed.map(r => `・${r}`).join("\n");
+        if (notfound.length) cmsg += (cmsg ? "\n\n" : "") + `⚠️ 記録が見つかりませんでした: ${notfound.join(" / ")}`;
+        if (!cmsg) cmsg = `${farm?.name} の${p.date ? shortD(stDate) + "の" : ""}棚卸し記録が見つかりませんでした。`;
+        await say(TOKEN, replyToken, srcId, cmsg.trim());
         continue;
       }
 
@@ -495,7 +566,7 @@ async function handleEvents(payload) {
         if (p.farm_id) await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, farm_id: p.farm_id, farm_set_at: new Date().toISOString(), updated_at: new Date().toISOString() });
 
         const farm = findFarm(farmId);
-        const date = jstToday();
+        const date = stDate;
         const recorded = [], pending = [], errors = [], learned = [];
 
         // ヘルパ: 餌の単位ラベル→unit定義
@@ -582,7 +653,7 @@ async function handleEvents(payload) {
             pending.push({
               farm_id: farmId, item_id: item.id, qtys: mergedQtys, kg: qtysToKg(item, mergedQtys),
               name: item.name, farmName: farm?.name, unitLabel: qtysLabel(item, mergedQtys), predKg: predShow, reason,
-              raw: row.raw || null,
+              raw: row.raw || null, date,
             });
           } else {
             item.counts[farmId].push({ date, qtys });
@@ -603,7 +674,8 @@ async function handleEvents(payload) {
           await sbUpsert(SB_URL, SB_KEY, "line_session", { source_id: srcId, pending, updated_at: new Date().toISOString() });
         }
 
-        let msg = `【${farm?.name}の棚卸し】\n`;
+        const dateLabel = date !== jstToday() ? `（${date.slice(5).replace("-", "/")}分）` : "";
+        let msg = `【${farm?.name}の棚卸し${dateLabel}】\n`;
         if (recorded.length) { msg += `✅ 記録（${recorded.length}件）\n` + recorded.map(r => `・${r.name}: ${r.unitLabel}` + diffLine(r.kg, r.pred)).join("\n") + "\n"; }
         if (pending.length) {
           msg += `\n⚠️ 確認が必要な項目\n` + pending.map(x => {

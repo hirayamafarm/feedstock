@@ -711,7 +711,7 @@ function UsageView({items,headCounts,onSelect}){
   const sorted=[...items].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
   return (<div style={S.fade}>
     <h2 style={S.h2}>使用量・在庫</h2>
-    <div style={S.lead}>餌ごとの農場別「使用量(1日／月)」と「現在庫・残り日数(今の在庫だけ／発注残込み)」の一覧です。棚卸しまたはExcelの実績から算出し、別給与を含みます。「メニュー」行は餌メニュー上の1頭あたり量（搾乳/乾乳/未経産）と、頭数を掛けた1日使用量です。</div>
+    <div style={S.lead}>餌ごとの農場別「使用量(1日／月)」と「現在庫・残り日数(今の在庫だけ／発注残込み)」の一覧です。使用量・残り日数はこれまで通りExcel実績から算出します。「メニュー想定」行は、餌メニュー上で1頭あたり何kgの使用想定か（搾乳/乾乳/未経産）を参考表示するものです。</div>
     {sorted.length===0?<div style={S.empty}>餌が登録されていません。先に「棚卸し」や「設定」から餌を登録してください。</div>:
       sorted.map(it=>{
         const u=unitOf(it); const sm=stockModeOf(it);
@@ -732,8 +732,8 @@ function UsageView({items,headCounts,onSelect}){
                 <span style={S.usageFarmName}>{r.name}{src&&<span style={S.usageSrc}>{src}</span>}</span>
                 <span style={S.usageFarmUse}>1日 <b>{d!=null?fmt(d):"—"}</b>{u}／月 <b>{mo!=null?fmt(mo):"—"}</b>{u}</span>
               </div>
-              {hasMenuPerHead(it,r.fid)&&(()=>{ const p=menuPerHeadOf(it,r.fid); const md=menuDailyKg(it,r.fid,headCounts);
-                return (<div style={S.usagePerHead}>メニュー 1頭 {CATS.filter(c=>p[c.key]>0).map(c=>`${c.label}${fmt(p[c.key])}`).join("／")}kg{md!=null?<span> ・ 頭数から1日<b>{fmt(md)}kg</b>／月{fmt(md*30)}kg</span>:<span style={{color:"var(--muted)"}}> ・ 頭数未設定（設定で登録すると1日量を計算）</span>}</div>);
+              {hasMenuPerHead(it,r.fid)&&(()=>{ const p=menuPerHeadOf(it,r.fid);
+                return (<div style={S.usagePerHead}>メニュー想定 1頭あたり {CATS.filter(c=>p[c.key]>0).map(c=>`${c.label} ${fmt(p[c.key])}kg`).join("／")}</div>);
               })()}
               {r.b&&r.b.hasUsage&&<div style={S.usageStockLine}>在庫 <b>{fmt(r.b.stock)}{u}</b>{r.b.pending>0?`＋発注残${fmt(Math.round(r.b.pending))}${u}`:""} ・ <RemainDays monthsLeftStock={r.b.monthsLeftStock} monthsLeft={r.b.monthsLeft} pending={r.b.pending}/></div>}
             </div>);

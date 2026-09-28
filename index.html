@@ -320,6 +320,25 @@ function stockModeOf(item){ return item?.stockMode==="shared"?"shared":"split"; 
 function stockScopesOf(item){ return item.farms||[]; }
 // 発注の対象農場(古いordersはshared互換)
 function orderForFarm(o){ return o.forFarm||"shared"; }
+// 牛のカテゴリ（餌メニュー上の1頭あたり給与量・頭数をこの区分で持つ）
+const CATS=[{key:"milk",label:"搾乳"},{key:"dry",label:"乾乳"},{key:"heifer",label:"未経産"}];
+// item.menuPerHead[fid] を {milk,dry,heifer} に正規化（古い数値形式=搾乳とみなす）
+function menuPerHeadOf(item,fid){
+  const v=item?.menuPerHead?.[fid];
+  if(v==null) return {milk:0,dry:0,heifer:0};
+  if(typeof v==="number") return {milk:v,dry:0,heifer:0};
+  return {milk:+v.milk||0,dry:+v.dry||0,heifer:+v.heifer||0};
+}
+function hasMenuPerHead(item,fid){ const p=menuPerHeadOf(item,fid); return p.milk>0||p.dry>0||p.heifer>0; }
+// 農場fidの頭数 {milk,dry,heifer}
+function headCountsOf(headCounts,fid){ const h=headCounts?.[fid]||{}; return {milk:+h.milk||0,dry:+h.dry||0,heifer:+h.heifer||0}; }
+// 餌メニューから算出する1日使用量(kg) = Σ(1頭量×頭数)。頭数or1頭量が無ければ null。
+function menuDailyKg(item,fid,headCounts){
+  const p=menuPerHeadOf(item,fid), h=headCountsOf(headCounts,fid);
+  if(!(p.milk>0||p.dry>0||p.heifer>0)) return null;
+  const kg=p.milk*h.milk+p.dry*h.dry+p.heifer*h.heifer;
+  return kg>0?kg:null;
+}
 
 // 農場の在庫の土台。棚卸しが無ければ、その農場宛ての受領済み入荷(入荷予定日が今日以前)の最古を初期在庫とする。
 function farmBase(item,fid){
@@ -688,11 +707,11 @@ function IncomingCalendarView({items,colors,onSetColor,onEditOrder,onDelOrder,on
 }
 
 // ── 使用量一覧（餌ごと・農場別の日/月使用量） ──────────
-function UsageView({items,onSelect}){
+function UsageView({items,headCounts,onSelect}){
   const sorted=[...items].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
   return (<div style={S.fade}>
     <h2 style={S.h2}>使用量・在庫</h2>
-    <div style={S.lead}>餌ごとの農場別「使用量(1日／月)」と「現在庫・残り日数(今の在庫だけ／発注残込み)」の一覧です。棚卸しまたはExcelの実績から算出し、別給与を含みます。</div>
+    <div style={S.lead}>餌ごとの農場別「使用量(1日／月)」と「現在庫・残り日数(今の在庫だけ／発注残込み)」の一覧です。棚卸しまたはExcelの実績から算出し、別給与を含みます。「メニュー」行は餌メニュー上の1頭あたり量（搾乳/乾乳/未経産）と、頭数を掛けた1日使用量です。</div>
     {sorted.length===0?<div style={S.empty}>餌が登録されていません。先に「棚卸し」や「設定」から餌を登録してください。</div>:
       sorted.map(it=>{
         const u=unitOf(it); const sm=stockModeOf(it);
@@ -713,7 +732,9 @@ function UsageView({items,onSelect}){
                 <span style={S.usageFarmName}>{r.name}{src&&<span style={S.usageSrc}>{src}</span>}</span>
                 <span style={S.usageFarmUse}>1日 <b>{d!=null?fmt(d):"—"}</b>{u}／月 <b>{mo!=null?fmt(mo):"—"}</b>{u}</span>
               </div>
-              {it.menuPerHead&&it.menuPerHead[r.fid]>0&&<div style={S.usagePerHead}>メニュー 1頭1日あたり <b>{fmt(it.menuPerHead[r.fid])}kg</b></div>}
+              {hasMenuPerHead(it,r.fid)&&(()=>{ const p=menuPerHeadOf(it,r.fid); const md=menuDailyKg(it,r.fid,headCounts);
+                return (<div style={S.usagePerHead}>メニュー 1頭 {CATS.filter(c=>p[c.key]>0).map(c=>`${c.label}${fmt(p[c.key])}`).join("／")}kg{md!=null?<span> ・ 頭数から1日<b>{fmt(md)}kg</b>／月{fmt(md*30)}kg</span>:<span style={{color:"var(--muted)"}}> ・ 頭数未設定（設定で登録すると1日量を計算）</span>}</div>);
+              })()}
               {r.b&&r.b.hasUsage&&<div style={S.usageStockLine}>在庫 <b>{fmt(r.b.stock)}{u}</b>{r.b.pending>0?`＋発注残${fmt(Math.round(r.b.pending))}${u}`:""} ・ <RemainDays monthsLeftStock={r.b.monthsLeftStock} monthsLeft={r.b.monthsLeft} pending={r.b.pending}/></div>}
             </div>);
           })}
@@ -721,6 +742,159 @@ function UsageView({items,onSelect}){
         </div>);
       })
     }
+  </div>);
+}
+
+// ── 在庫シミュレーション（餌1品ずつ・入荷/増量/％の what-if） ──────────
+function SimulationView({items,headCounts,warningDays}){
+  const sorted=[...items].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
+  const [selId,setSelId]=useState(sorted[0]?.id??null);
+  const [basis,setBasis]=useState("actual");   // actual=実績 / menu=メニュー
+  const [pct,setPct]=useState("0");             // 全体の給与量 ±%
+  const [delta,setDelta]=useState({milk:"",dry:"",heifer:""}); // 1頭あたり増量(kg)
+  const [tent,setTent]=useState([]);            // 仮の入荷 [{id,date,kg,farm}]
+  const [tDate,setTDate]=useState(today());
+  const [tKg,setTKg]=useState("");
+  const [tFarm,setTFarm]=useState("");
+  const it=sorted.find(i=>i.id===selId)||null;
+  const u=it?unitOf(it):"kg";
+  const td=today();
+  const HORIZON=365;
+  const pctN=parseFloat(pct)||0;
+  const deltaN={milk:parseFloat(delta.milk)||0,dry:parseFloat(delta.dry)||0,heifer:parseFloat(delta.heifer)||0};
+  const anyDelta=deltaN.milk||deltaN.dry||deltaN.heifer;
+
+  // 農場fid群の頭数合計(カテゴリ別)
+  const headsSum=(fids,cat)=>fids.reduce((s,f)=>s+headCountsOf(headCounts,f)[cat],0);
+
+  const proj=(startStock,usageDay,arrivals)=>{
+    const byDate={}; for(const a of arrivals){ if(a.date>=td&&a.kg>0) byDate[a.date]=(byDate[a.date]||0)+a.kg; }
+    let stock=startStock, runout=null; const series=[];
+    for(let d=0; d<=HORIZON; d++){
+      const date=addDays(td,d);
+      if(byDate[date]) stock+=byDate[date];
+      if(stock<0) stock=0;                                  // 在庫はマイナスにしない（不足＝0）
+      if(stock<=0.0001&&runout===null) runout=date;
+      series.push({d,date,stock});
+      if(usageDay>0) stock-=usageDay;                       // その日の消費（翌ループで0に丸め）
+      else if(d>45&&!Object.keys(byDate).some(x=>x>date)) break; // 消費0で以後入荷なし→打ち切り
+    }
+    const daysLeft=runout!==null?Math.max(0,Math.round((new Date(runout)-new Date(td))/86400000)):null;
+    return {runout,daysLeft,series};
+  };
+
+  // スコープ（農場別 or 共通合計）
+  const scopes=(()=>{
+    if(!it) return [];
+    if(stockModeOf(it)==="shared") return [{key:"__shared",label:"共通(合計)",fids:it.farms||[]}];
+    return (it.farms||[]).map(fid=>({key:fid,label:FARMS.find(f=>f.id===fid)?.name||fid,fids:[fid]}));
+  })();
+
+  const dow=["日","月","火","水","木","金","土"];
+  const fmtD=(d)=>{ if(!d) return "—"; const dt=new Date(d+"T00:00:00"); return `${d.slice(5).replace("-","/")}(${dow[dt.getDay()]})`; };
+
+  const addTent=()=>{ const kg=parseFloat(tKg); if(!(kg>0)||!tDate) return; const farm=scopes.length>1?(tFarm||scopes[0].key):(scopes[0]?.key||""); setTent(t=>[...t,{id:Date.now(),date:tDate,kg,farm}]); setTKg(""); };
+  const rmTent=(id)=>setTent(t=>t.filter(x=>x.id!==id));
+
+  return (<div style={S.fade}>
+    <h2 style={S.h2}>在庫シミュレーション</h2>
+    <div style={S.lead}>餌を1つ選び、「このまま（現状）」と「変更後（仮入荷・増量・％）」で在庫の減り方・尽きる日を比べます。今の在庫と確定した入荷予定を土台にします。</div>
+
+    <label style={S.field}><span style={S.fieldLabel}>餌を選ぶ</span>
+      <select style={S.input} value={selId??""} onChange={e=>{ setSelId(Number(e.target.value)); setTent([]); }}>
+        {sorted.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}
+      </select>
+    </label>
+    {!it?<div style={S.empty}>餌が登録されていません。</div>:(<>
+      <div style={S.field}><span style={S.fieldLabel}>基準にする1日使用量</span>
+        <div style={S.modeRow}>
+          <button style={{...S.modeTab,...(basis==="actual"?S.modeActive:{})}} onClick={()=>setBasis("actual")}>実績</button>
+          <button style={{...S.modeTab,...(basis==="menu"?S.modeActive:{})}} onClick={()=>setBasis("menu")}>メニュー(1頭量×頭数)</button>
+        </div>
+      </div>
+
+      <div style={S.simPanel}>
+        <div style={S.simPanelTitle}>変更（what-if）</div>
+        <label style={{...S.field,margin:"6px 0"}}><span style={S.fieldLabel}>全体の給与量を増減（％）</span>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <input style={{...S.input,width:110}} type="number" inputMode="decimal" value={pct} onChange={e=>setPct(e.target.value)}/>
+            <span style={{fontSize:13,color:"var(--muted)"}}>％（マイナスで減量）</span>
+          </div>
+        </label>
+        <div style={{...S.field,margin:"6px 0"}}><span style={S.fieldLabel}>1頭あたり増量（kg/頭・日／頭数と掛けて全体に反映）</span>
+          <div style={{display:"flex",gap:6}}>
+            {CATS.map(c=>(<label key={c.key} style={{flex:1,display:"flex",flexDirection:"column",gap:2}}>
+              <span style={{fontSize:11,color:"var(--muted)"}}>{c.label}</span>
+              <input style={{...S.input,padding:"7px 8px"}} type="number" inputMode="decimal" placeholder="+kg" value={delta[c.key]} onChange={e=>setDelta(s=>({...s,[c.key]:e.target.value}))}/>
+            </label>))}
+          </div>
+        </div>
+        <div style={{...S.field,margin:"6px 0"}}><span style={S.fieldLabel}>仮の入荷を追加</span>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+            <input type="date" style={{...S.input,width:150}} value={tDate} onChange={e=>setTDate(e.target.value)}/>
+            <input type="number" inputMode="decimal" style={{...S.input,width:110}} placeholder={`量(${u})`} value={tKg} onChange={e=>setTKg(e.target.value)}/>
+            {scopes.length>1&&<select style={{...S.input,width:130}} value={tFarm||scopes[0].key} onChange={e=>setTFarm(e.target.value)}>{scopes.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}</select>}
+            <button style={S.planTentBtn} onClick={addTent}>＋仮入荷</button>
+          </div>
+          {tent.length>0&&<div style={{marginTop:6}}>{tent.map(t=>(<div key={t.id} style={S.simTentRow}><span>仮 {fmtD(t.date)} ＋{fmt(t.kg)}{u}{scopes.length>1?`（${scopes.find(s=>s.key===t.farm)?.label||""}）`:""}</span><button style={S.miniDel} onClick={()=>rmTent(t.id)}>×</button></div>))}</div>}
+        </div>
+      </div>
+
+      {scopes.map(sc=>{
+        // 土台在庫・実績使用量
+        let startStock=0, actualDay=0, menuDay=0;
+        if(sc.key==="__shared"){ const a=analyze(it); startStock=a.totalStock; actualDay=(a.totalUsage||0)/30; menuDay=sc.fids.reduce((s,f)=>s+(menuDailyKg(it,f,headCounts)||0),0); }
+        else { const bf=analyzeByFarm(it)[sc.key]; startStock=bf?bf.stock:0; actualDay=farmStats(it,sc.key).dailyKg||0; menuDay=menuDailyKg(it,sc.key,headCounts)||0; }
+        const baseDay=basis==="menu"?menuDay:actualDay;
+        const perHeadAdd=CATS.reduce((s,c)=>s+deltaN[c.key]*headsSum(sc.fids,c.key),0);
+        const adjDay=Math.max(0, baseDay*(1+pctN/100)+perHeadAdd);
+        // 確定入荷（未来）
+        const confirmed=(it.orders||[]).filter(o=>o.etaDate>td&&(sc.key==="__shared"||orderForFarm(o)===sc.key||orderForFarm(o)==="shared")).map(o=>({date:o.etaDate,kg:o.kg}));
+        const tentA=tent.filter(t=>sc.key==="__shared"||t.farm===sc.key).map(t=>({date:t.date,kg:t.kg}));
+        const pBase=proj(startStock,baseDay,confirmed);
+        const pAdj=proj(startStock,adjDay,[...confirmed,...tentA]);
+        const noBase=baseDay<=0, noAdj=adjDay<=0;
+        // 表示レンジ
+        const maxDay=Math.min(HORIZON,Math.max(60,(pBase.daysLeft||120),(pAdj.daysLeft||120))+20);
+        const maxStock=Math.max(startStock, ...pBase.series.map(p=>p.stock), ...pAdj.series.map(p=>p.stock), 1);
+        const stockAt=(series,d)=>{ const pt=series.find(p=>p.d===d); if(pt) return pt.stock; const last=series[series.length-1]; return last&&d>last.d?last.stock:0; };
+        const W=320,H=110,PAD=4;
+        const pts=(series)=>{ let s=""; for(let d=0;d<=maxDay;d+=Math.max(1,Math.round(maxDay/60))){ const x=PAD+(W-2*PAD)*d/maxDay; const y=PAD+(H-2*PAD)*(1-stockAt(series,d)/maxStock); s+=`${x.toFixed(1)},${y.toFixed(1)} `; } return s.trim(); };
+        const warnDay=warningDays||0;
+        return (<div key={sc.key} style={S.simScope}>
+          <div style={S.simScopeHead}>{sc.label}</div>
+          <div style={S.simNums}>
+            <span>今の在庫 <b>{fmt(startStock)}{u}</b></span>
+            <span>1日 現状<b>{fmt(baseDay)}</b>{u}{(pctN!==0||perHeadAdd!==0)&&<> → 変更後<b style={{color:"var(--accent)"}}>{fmt(adjDay)}</b>{u}</>}</span>
+          </div>
+          {basis==="menu"&&menuDay<=0&&<div style={S.simWarn}>メニューの1頭量または頭数が未設定です（設定・餌編集で登録してください）。</div>}
+          <div style={S.simCompare}>
+            <div style={S.simCompareCol}>
+              <div style={S.simColLabel}>このまま（現状）</div>
+              <div style={S.simColBig}>{noBase?"—":pBase.runout?`${fmtD(pBase.runout)}`:"1年以上"}</div>
+              <div style={S.simColSub}>{noBase?"使用量0":pBase.daysLeft!=null?`残り約${pBase.daysLeft}日`:"在庫は当面もちます"}</div>
+            </div>
+            <div style={{...S.simCompareCol,borderLeft:"1px solid var(--line)"}}>
+              <div style={{...S.simColLabel,color:"var(--accent)"}}>変更後</div>
+              <div style={{...S.simColBig,color:"var(--accent)"}}>{noAdj?"—":pAdj.runout?`${fmtD(pAdj.runout)}`:"1年以上"}</div>
+              <div style={S.simColSub}>{noAdj?"使用量0":pAdj.daysLeft!=null?`残り約${pAdj.daysLeft}日`:"在庫は当面もちます"}</div>
+            </div>
+          </div>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:110,marginTop:8,background:"var(--card2,rgba(0,0,0,.02))",borderRadius:8}}>
+            {warnDay>0&&maxStock>0&&(()=>{ const y=PAD+(H-2*PAD)*(1-(baseDay*warnDay)/maxStock); return baseDay*warnDay<maxStock?<line x1={PAD} y1={y} x2={W-PAD} y2={y} stroke="var(--bad)" strokeWidth="0.7" strokeDasharray="3 3" opacity="0.5"/>:null; })()}
+            <polyline points={pts(pBase.series)} fill="none" stroke="var(--muted)" strokeWidth="1.6"/>
+            <polyline points={pts(pAdj.series)} fill="none" stroke="var(--accent)" strokeWidth="1.8"/>
+          </svg>
+          <div style={S.simLegend}><span style={{color:"var(--muted)"}}>― 現状</span><span style={{color:"var(--accent)",marginLeft:10}}>― 変更後</span>{warnDay>0&&<span style={{color:"var(--bad)",marginLeft:10}}>┈ 警告({warnDay}日)ライン</span>}</div>
+          {(confirmed.length>0||tentA.length>0)&&(<div style={S.simArrivals}>
+            <div style={{fontWeight:700,fontSize:12.5,marginBottom:3}}>入荷予定</div>
+            {[...confirmed.map(a=>({...a,t:"確定"})),...tentA.map(a=>({...a,t:"仮"}))].sort((a,b)=>a.date.localeCompare(b.date)).map((a,i)=>(
+              <div key={i} style={S.simArrRow}><span>{a.t==="仮"?"🟠仮":"✓確定"} {fmtD(a.date)}</span><span>＋{fmt(a.kg)}{u}</span></div>
+            ))}
+          </div>)}
+        </div>);
+      })}
+    </>)}
   </div>);
 }
 
@@ -813,6 +987,7 @@ function App(){
   };
   const setWarningDays=(d)=>update(s=>{ s.warningDays=Math.max(0,parseInt(d)||0); return s; }, `警告日数を ${d}日 に変更`);
   const setIncomingColor=(farm,hex)=>update(s=>{ s.incomingColors=s.incomingColors||{}; s.incomingColors[farm]=hex; return s; }, `入荷カレンダーの色を変更（${farm}）`);
+  const setHeadCount=(fid,cat,n)=>update(s=>{ s.headCounts=s.headCounts||{}; s.headCounts[fid]=s.headCounts[fid]||{}; const v=parseFloat(n); if(v>0) s.headCounts[fid][cat]=v; else delete s.headCounts[fid][cat]; return s; }, `頭数を変更（${FARMS.find(f=>f.id===fid)?.name||fid}）`);
   const refreshNow=async()=>{ const s=await loadState(); if(s){ setState(s); setSync("saved"); } setLog(await loadLog()); };
   const nameOf=(id)=>state.items.find(i=>i.id===id)?.name||"餌";
   const saveCount=(id,fid,date,qtys)=>{
@@ -921,15 +1096,16 @@ function App(){
         })()}
       </header>
       <main style={S.main}>
-        {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings") && (<>
+        {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="sim"||view==="diff"||view==="data"||view==="settings") && (<>
           {view==="incoming"&&<IncomingCalendarView items={state.items} colors={state.incomingColors||{}} onSetColor={setIncomingColor} onEditOrder={editOrder} onDelOrder={delOrder} onToggleReceived={toggleReceived}/>}
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items} onAddOrder={addOrder} warningDays={warningDays}/>}
-          {view==="usage"&&<UsageView items={state.items} onSelect={id=>{setSelId(id);setPrevView("usage");setView("detail");}}/>}
+          {view==="usage"&&<UsageView items={state.items} headCounts={state.headCounts||{}} onSelect={id=>{setSelId(id);setPrevView("usage");setView("detail");}}/>}
+          {view==="sim"&&<SimulationView items={state.items} headCounts={state.headCounts||{}} warningDays={warningDays}/>}
           {view==="diff"&&<DiffView items={state.items} records={state.discrepancies||[]}/>}
           {view==="data"&&<DataView items={state.items} log={log} me={me} onSetMe={setMe} onApply={applyFeedDaily} onClear={clearFeedDaily} onSetExtra={setExtra} onAddItem={addItem} role={role}/>}
-          {view==="settings"&&<SettingsView farms={FARMS} onRenameFarm={renameFarm} state={state} onRestore={restoreState} warningDays={warningDays} onSetWarningDays={setWarningDays} role={role} accessCodes={state.accessCodes||{}} onSetAccessCodes={setAccessCodes}/>}
+          {view==="settings"&&<SettingsView farms={FARMS} onRenameFarm={renameFarm} state={state} onRestore={restoreState} warningDays={warningDays} onSetWarningDays={setWarningDays} role={role} accessCodes={state.accessCodes||{}} onSetAccessCodes={setAccessCodes} headCounts={state.headCounts||{}} onSetHeadCount={setHeadCount}/>}
         </>)}
         {view==="detail"&&sel&&<DetailView item={sel} items={state.items} onChangeItem={(id)=>setSelId(id)} onBack={()=>setView(prevView)}
           onAddOrder={(kg,eta,ff)=>addOrder(sel.id,kg,eta,ff)} onToggle={oid=>toggleReceived(sel.id,oid)}
@@ -938,20 +1114,20 @@ function App(){
         {view==="edit"&&sel&&<EditView item={sel} onSave={(patch)=>{editItem(sel.id,patch);setView("detail");}} onCancel={()=>setView("detail")}/>}
         {view==="add"&&<AddView onSave={it=>{addItem(it);setView("inventory");}} onCancel={()=>setView("inventory")}/>}
       </main>
-      {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="diff"||view==="data"||view==="settings")&&(
+      {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="sim"||view==="diff"||view==="data"||view==="settings")&&(
         <nav style={S.bottomNav} className="no-print">
           {[{id:"incoming",icon:"incoming",label:"入荷"},{id:"order",icon:"order",label:"発注"},{id:"inventory",icon:"inventory",label:"棚卸し"},{id:"calendar",icon:"calendar",label:"カレンダー"}].map(t=>(
             <button key={t.id} style={{...S.bnItem,...(view===t.id?S.bnActive:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
               <span style={S.bnIcon}><NavIcon name={t.icon}/></span><span style={S.bnLabel}>{t.label}</span>
             </button>
           ))}
-          <button style={{...S.bnItem,...((["usage","diff","data","settings"].includes(view)||moreOpen)?S.bnActive:{})}} onClick={()=>setMoreOpen(o=>!o)}>
+          <button style={{...S.bnItem,...((["usage","sim","diff","data","settings"].includes(view)||moreOpen)?S.bnActive:{})}} onClick={()=>setMoreOpen(o=>!o)}>
             <span style={S.bnIcon}><NavIcon name="more"/></span><span style={S.bnLabel}>その他</span>
           </button>
           {moreOpen&&(<>
             <div style={S.menuOverlay} onClick={()=>setMoreOpen(false)}/>
             <div style={S.bnMore}>
-              {[{id:"usage",icon:"usage",label:"使用量・在庫"},{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
+              {[{id:"usage",icon:"usage",label:"使用量・在庫"},{id:"sim",icon:"diff",label:"在庫シミュレーション"},{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
                 <button key={t.id} style={{...S.bnMoreItem,...(view===t.id?{color:"var(--accent)"}:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
                   <NavIcon name={t.icon} size={20}/> {t.label}
                 </button>
@@ -1048,7 +1224,7 @@ function AccessCodesEditor({codes,onSave}){
   </div>);
 }
 
-function SettingsView({farms,onRenameFarm,state,onRestore,warningDays,onSetWarningDays,role,accessCodes,onSetAccessCodes}){
+function SettingsView({farms,onRenameFarm,state,onRestore,warningDays,onSetWarningDays,role,accessCodes,onSetAccessCodes,headCounts,onSetHeadCount}){
   const [restoreErr,setRestoreErr]=useState("");
   const [wd,setWd]=useState(String(warningDays??5));
   useEffect(()=>setWd(String(warningDays??5)),[warningDays]);
@@ -1062,6 +1238,11 @@ function SettingsView({farms,onRenameFarm,state,onRestore,warningDays,onSetWarni
     <div style={S.lead}>農場の名前を変更できます。変更内容は全員に共有されます。</div>
     <h3 style={S.h3}>農場名</h3>
     {farms.map(f=>(<FarmEditor key={f.id} farm={f} onSave={(name)=>onRenameFarm(f.id,name)}/>))}
+
+    <h3 style={{...S.h3,marginTop:24}}>頭数（搾乳・乾乳・未経産）</h3>
+    <div style={S.lead}>農場ごとの頭数を登録すると、餌メニューの「1頭あたり量 × 頭数」でメニュー上の1日使用量を計算し、使用量・在庫やシミュレーションで使います。</div>
+    {role!=="owner"?(<div style={S.warnBox}>⚠ 頭数の変更はオーナーモードでのみ可能です。</div>):
+      farms.map(f=>(<HeadCountEditor key={f.id} farm={f} counts={headCounts?.[f.id]||{}} onSet={(cat,n)=>onSetHeadCount(f.id,cat,n)}/>))}
 
     <h3 style={{...S.h3,marginTop:24}}>発注の警告日数</h3>
     <div style={S.lead}>発注を追加するとき、入荷予定日までに在庫がこの日数を下回る見込みなら警告を出します。0にすると警告は出ません。</div>
@@ -1116,6 +1297,23 @@ function FarmEditor({farm,onSave}){
     <span style={S.farmEditId}>{farm.id.toUpperCase()}</span>
     <input style={{...S.input,flex:1}} value={v} onChange={e=>setV(e.target.value)} placeholder="農場名"/>
     <button style={{...S.addMini,opacity:dirty?1:0.4}} disabled={!dirty} onClick={()=>onSave(v.trim())}>保存</button>
+  </div>);
+}
+
+function HeadCountEditor({farm,counts,onSet}){
+  const [v,setV]=useState(()=>{ const m={}; for(const c of CATS) m[c.key]=counts[c.key]?String(counts[c.key]):""; return m; });
+  useEffect(()=>{ const m={}; for(const c of CATS) m[c.key]=counts[c.key]?String(counts[c.key]):""; setV(m); },[farm.id,counts.milk,counts.dry,counts.heifer]);
+  const dirty=CATS.some(c=>(parseFloat(v[c.key])||0)!==(counts[c.key]||0));
+  const total=CATS.reduce((s,c)=>s+(parseFloat(v[c.key])||0),0);
+  return (<div style={{...S.byFarmBox,marginBottom:10}}>
+    <div style={S.byFarmTitle}>{farm.name}{total>0&&<span style={{fontWeight:400,color:"var(--muted)",marginLeft:8,fontSize:12}}>計 {fmt(total)}頭</span>}</div>
+    <div style={{display:"flex",gap:6,alignItems:"flex-end"}}>
+      {CATS.map(c=>(<label key={c.key} style={{flex:1,display:"flex",flexDirection:"column",gap:2}}>
+        <span style={{fontSize:11,color:"var(--muted)"}}>{c.label}</span>
+        <input style={{...S.input,padding:"7px 8px"}} type="number" inputMode="numeric" placeholder="頭" value={v[c.key]} onChange={e=>setV(s=>({...s,[c.key]:e.target.value}))}/>
+      </label>))}
+      <button style={{...S.addMini,opacity:dirty?1:0.4}} disabled={!dirty} onClick={()=>{ for(const c of CATS){ if((parseFloat(v[c.key])||0)!==(counts[c.key]||0)) onSet(c.key,v[c.key]); } }}>保存</button>
+    </div>
   </div>);
 }
 
@@ -2723,12 +2921,13 @@ function ItemForm({initial,onSave,onCancel,title}){
   const [farms,setFarms]=useState(initial?.farms?initial.farms.slice():["a","b"]);
   const [units,setUnits]=useState(initial?.units?initial.units.map(u=>({id:u.id,label:u.label,kg:String(u.kg)})):[{id:"u1",label:"",kg:""}]);
   const [excludeFromPlan,setExcludeFromPlan]=useState(!!initial?.excludeFromPlan);
-  const [menuPerHead,setMenuPerHead]=useState(()=>{ const m={}; const src=initial?.menuPerHead||{}; for(const k in src) m[k]=String(src[k]); return m; });
+  const [menuPerHead,setMenuPerHead]=useState(()=>{ const m={}; for(const fid of (initial?.farms||["a","b"])){ const p=menuPerHeadOf(initial||{},fid); m[fid]={milk:p.milk?String(p.milk):"",dry:p.dry?String(p.dry):"",heifer:p.heifer?String(p.heifer):""}; } return m; });
+  const setMPH=(fid,cat,v)=>setMenuPerHead(s=>({...s,[fid]:{...(s[fid]||{}),[cat]:v}}));
   const toggleFarm=(fid)=>setFarms(s=>s.includes(fid)?s.filter(x=>x!==fid):[...s,fid]);
   const setUnit=(i,k,v)=>setUnits(s=>s.map((u,idx)=>idx===i?{...u,[k]:v}:u));
   const addUnit=()=>setUnits(s=>[...s,{id:"u"+Date.now(),label:"",kg:""}]); const rmUnit=(i)=>setUnits(s=>s.filter((_,idx)=>idx!==i));
   const clean=units.filter(u=>u.label.trim()&&parseFloat(u.kg)>0).map(u=>({id:u.id,label:u.label.trim(),kg:parseFloat(u.kg)}));
-  const cleanMPH=(()=>{ const m={}; for(const fid of farms){ const v=parseFloat(menuPerHead[fid]); if(v>0) m[fid]=v; } return m; })();
+  const cleanMPH=(()=>{ const m={}; for(const fid of farms){ const r=menuPerHead[fid]||{}; const o={}; for(const c of CATS){ const v=parseFloat(r[c.key]); if(v>0) o[c.key]=v; } if(Object.keys(o).length) m[fid]=o; } return m; })();
   const ok=name.trim()&&farms.length>0;
   const uLabel=unitType==="piece"?"個":"kg";
   return (<div style={S.fade}>
@@ -2760,11 +2959,16 @@ function ItemForm({initial,onSave,onCancel,title}){
     </div>
     <div style={S.field}><span style={S.fieldLabel}>餌メニューの1頭・1日あたり使用量（kg・任意）</span>
       {farms.length===0?<div style={S.miniNote}>先に使用する農場を選んでください。</div>:
-        farms.map(fid=>(<div key={fid} style={S.unitEditRow}>
-          <span style={{flex:1.4,fontSize:14,fontWeight:700,color:"var(--ink)"}}>{FARMS.find(x=>x.id===fid)?.name}</span>
-          <input style={{...S.input,flex:1}} type="number" inputMode="decimal" placeholder="kg/頭・日" value={menuPerHead[fid]||""} onChange={e=>setMenuPerHead(s=>({...s,[fid]:e.target.value}))}/>
+        farms.map(fid=>(<div key={fid} style={{marginBottom:8}}>
+          <div style={{fontSize:13,fontWeight:700,color:"var(--accent)",marginBottom:3}}>{FARMS.find(x=>x.id===fid)?.name}</div>
+          <div style={{display:"flex",gap:6}}>
+            {CATS.map(c=>(<label key={c.key} style={{flex:1,display:"flex",flexDirection:"column",gap:2}}>
+              <span style={{fontSize:11,color:"var(--muted)"}}>{c.label}</span>
+              <input style={{...S.input,padding:"7px 8px"}} type="number" inputMode="decimal" placeholder="kg/頭" value={(menuPerHead[fid]||{})[c.key]||""} onChange={e=>setMPH(fid,c.key,e.target.value)}/>
+            </label>))}
+          </div>
         </div>))}
-      <div style={{...S.miniNote,marginTop:6}}>餌を作成するときの餌メニュー上の「1頭・1日あたりの給与量(kg)」です。実績の給餌量からの割り返しではありません。「使用量・在庫」ページに表示します。</div>
+      <div style={{...S.miniNote,marginTop:6}}>餌メニュー上の「1頭・1日あたりの給与量(kg)」を搾乳・乾乳・未経産で入力します。実績の割り返しではありません。頭数（設定）と掛け合わせてメニュー上の1日使用量を計算し、「使用量・在庫」やシミュレーションに使います。</div>
     </div>
     <label style={S.field}><span style={S.fieldLabel}>安全在庫（翌月棚卸しに加えて確保する月数）</span><input style={S.input} type="number" inputMode="decimal" value={reserve} onChange={e=>setReserve(e.target.value)}/></label>
     <label style={{...S.field,display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"10px 12px",background:excludeFromPlan?"rgba(168,73,47,.06)":"transparent",border:excludeFromPlan?"1px solid rgba(168,73,47,.3)":"1px solid var(--line)",borderRadius:9}}>
@@ -3074,6 +3278,21 @@ const S={
   usageFarmUse:{fontSize:13,color:"var(--ink)"},
   usageStockLine:{fontSize:12.5,color:"var(--muted)",marginTop:3},
   usagePerHead:{fontSize:12,color:"var(--accent)",marginTop:2,fontWeight:600},
+  simPanel:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:11,padding:"10px 12px",margin:"12px 0"},
+  simPanelTitle:{fontSize:13,fontWeight:700,color:"var(--ink)",marginBottom:2},
+  simTentRow:{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12.5,padding:"3px 0",borderTop:"1px dashed var(--line)"},
+  simScope:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:11,padding:"12px",marginBottom:12},
+  simScopeHead:{fontSize:15,fontWeight:700,color:"var(--accent)",marginBottom:6},
+  simNums:{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:8,fontSize:13,marginBottom:6},
+  simWarn:{fontSize:12,color:"var(--bad)",background:"rgba(168,73,47,.07)",borderRadius:8,padding:"6px 8px",marginBottom:6},
+  simCompare:{display:"flex",border:"1px solid var(--line)",borderRadius:9,overflow:"hidden"},
+  simCompareCol:{flex:1,padding:"8px 10px",textAlign:"center"},
+  simColLabel:{fontSize:11.5,color:"var(--muted)",fontWeight:700},
+  simColBig:{fontSize:18,fontWeight:800,margin:"2px 0"},
+  simColSub:{fontSize:11.5,color:"var(--muted)"},
+  simLegend:{fontSize:11,marginTop:2},
+  simArrivals:{marginTop:8,borderTop:"1px solid var(--line)",paddingTop:6},
+  simArrRow:{display:"flex",justifyContent:"space-between",fontSize:12.5,padding:"2px 0"},
   usageSrc:{fontSize:10,fontWeight:700,color:"var(--muted)",background:"rgba(120,110,80,.1)",borderRadius:6,padding:"1px 6px",marginLeft:6,verticalAlign:"middle"},
   itemFilterRow:{display:"flex",flexWrap:"wrap",gap:6},
   itemFilterBtn:{padding:"5px 11px",border:"1px solid var(--line)",background:"#fff",borderRadius:14,fontSize:12.5,fontWeight:700,color:"var(--muted)"},

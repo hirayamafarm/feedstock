@@ -1142,6 +1142,17 @@ function App(){
     it.name=patch.name; it.unitType=patch.unitType; it.stockMode=patch.stockMode; it.reserveMonths=patch.reserveMonths; it.farms=patch.farms; it.units=patch.units; it.excludeFromPlan=!!patch.excludeFromPlan; it.menuPerHead=newMPH; return s;
   },`餌を編集: ${patch.name}`);
   const delItem=(id)=>update(s=>{ s.items=s.items.filter(i=>i.id!==id); return s; },`餌を削除: ${nameOf(id)}`);
+  // 日誌取込→餌メニュー(1頭あたり量)へ一括反映。list=[{id,fid,cat,kg}]
+  const applyMenuReflect=(list)=>update(s=>{ const d=today();
+    for(const {id,fid,cat,kg} of list){ const it=s.items.find(i=>i.id===id); if(!it) continue;
+      const before=canonMenu(it.menuPerHead||{});
+      it.menuPerHead=it.menuPerHead||{};
+      const cur=(typeof it.menuPerHead[fid]==="number")?{milk:it.menuPerHead[fid],dry:0,heifer:0}:{...(it.menuPerHead[fid]||{})};
+      if(kg>0) cur[cat]=Math.round(kg*100)/100; else delete cur[cat];
+      it.menuPerHead[fid]=cur;
+      if(before!==canonMenu(it.menuPerHead)){ it.menuLog=it.menuLog||[]; it.menuLog=it.menuLog.filter(e=>e.date!==d); it.menuLog.push({date:d,perHead:JSON.parse(JSON.stringify(it.menuPerHead))}); it.menuLog.sort((a,b)=>a.date.localeCompare(b.date)); if(it.menuLog.length>60) it.menuLog=it.menuLog.slice(-60); }
+    }
+    return s; },`餌メニューへ反映（日誌取込・${list.length}件）`);
   const applyFeedDaily=(id,fid,info)=>update(s=>{ const it=s.items.find(i=>i.id===id); it.feedDaily=it.feedDaily||{}; it.feedDaily[fid]=info; return s; },
     `給餌Excel取込: ${nameOf(id)}（${FARMS.find(f=>f.id===fid)?.name} 日次${fmt(info.dailyKg)}kg）`);
   const clearFeedDaily=(id,fid)=>update(s=>{ const it=s.items.find(i=>i.id===id); if(it.feedDaily) delete it.feedDaily[fid]; return s; },`給餌Excel取消: ${nameOf(id)}`);
@@ -1212,7 +1223,7 @@ function App(){
           {view==="sim"&&<SimulationView items={state.items} headCounts={state.headCounts||{}} warningDays={warningDays}/>}
           {view==="menu"&&<MenuView items={state.items} onSelect={id=>{setSelId(id);setPrevView("menu");setView("detail");}}/>}
           {view==="diff"&&<DiffView items={state.items} records={state.discrepancies||[]}/>}
-          {view==="data"&&<DataView items={state.items} log={log} me={me} onSetMe={setMe} onApply={applyFeedDaily} onClear={clearFeedDaily} onSetExtra={setExtra} onAddItem={addItem} role={role}/>}
+          {view==="data"&&<DataView items={state.items} log={log} me={me} onSetMe={setMe} onApply={applyFeedDaily} onClear={clearFeedDaily} onSetExtra={setExtra} onAddItem={addItem} onApplyMenu={applyMenuReflect} role={role}/>}
           {view==="settings"&&<SettingsView farms={FARMS} onRenameFarm={renameFarm} state={state} onRestore={restoreState} warningDays={warningDays} onSetWarningDays={setWarningDays} role={role} accessCodes={state.accessCodes||{}} onSetAccessCodes={setAccessCodes} headCounts={state.headCounts||{}} onSetHeadCount={setHeadCount}/>}
         </>)}
         {view==="detail"&&sel&&<DetailView item={sel} items={state.items} onChangeItem={(id)=>setSelId(id)} onBack={()=>setView(prevView)}
@@ -2552,7 +2563,7 @@ function MonthGrid({item,scope,ymStr,large}){
 }
 
 // ── 取込/履歴 ───────────────────────────────────
-function DataView({items,log,me,onSetMe,onApply,onClear,onSetExtra,onAddItem}){
+function DataView({items,log,me,onSetMe,onApply,onClear,onSetExtra,onAddItem,onApplyMenu}){
   return (<div style={S.fade}>
     <h2 style={S.h2}>給餌Excelの取込</h2>
     <div style={S.lead}>共有の給餌記録(Excel)を読み込み、実際の1日あたり消費を割り出します。これが棚卸しより優先され、発注・カレンダーに使われます。</div>
@@ -2611,6 +2622,10 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
   const [showDebug,setShowDebug]=useState(false);
   const [selectedTargets,setSelectedTargets]=useState({}); // key="farm|feedname" -> itemId(target) or "new"
   const [usageWarnings,setUsageWarnings]=useState([]); // 月間使用量が1割以上変動した餌
+  const [hirayamaHeads,setHirayamaHeads]=useState({}); // farmId -> 直近頭数（日誌から）
+  const [reflectHeads,setReflectHeads]=useState({});   // farmId -> 頭数(編集可・文字列)
+  const [reflectCat,setReflectCat]=useState("milk");   // 反映先の牛区分
+  const [menuMsg,setMenuMsg]=useState("");             // メニュー反映の結果メッセージ
 
   const onFile=async(e)=>{ const f=e.target.files?.[0]; if(!f) return; try{
     const buf=await f.arrayBuffer();
@@ -2625,6 +2640,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
   const cancelImport=()=>{
     setSheets(null); setSheetName("");
     setHirayamaResults(null); setHirayamaDebug(null);
+    setHirayamaHeads({}); setReflectHeads({}); setMenuMsg("");
     setSheetFarmOverride(null); setShowDebug(false);
     setSelectedTargets({}); setMsg(""); setMenuChangeDate(""); setMenuAuto("");
   };
@@ -2635,6 +2651,7 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
     // sheetFarmOverride: { sheetName: farmId } の形式
     const farmMap=FARMS.map(f=>({keywords:[f.name],farmId:f.id,farmName:f.name}));
     const results={};
+    const heads={}; // farmId -> 直近頭数（日誌の頭数行から）
     let foundAny=false;
     const debugSheets=Object.keys(sheets);
     const debug=[]; // 各シートの解析結果(画面表示用)
@@ -2720,12 +2737,15 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
       };
 
       const feedDaily={};
+      const headDaily={}; // 日誌の「頭数」行（餌メニュー反映で1頭あたりを出すのに使う）
       for(const r of ranges){
         for(let row=r.startRow;row<r.endRow;row++){
           const name=rows[row]?.[0]; if(!name) continue;
           const ns=String(name).trim(); if(!ns) continue;
           const reason=isNotFeed(ns);
-          if(reason){ sheetDebug.excluded.push({row:row+1, name:ns, reason}); continue; }
+          if(reason){ sheetDebug.excluded.push({row:row+1, name:ns, reason});
+            if(ns.includes("頭数")){ for(let i=0;i<dateCols.length;i++){ const c=dateCols[i]; const v=rows[row][c]; const num=typeof v==="number"?v:parseFloat(v); if(!isNaN(num)&&num>0) headDaily[dates[i]]=Math.max(headDaily[dates[i]]||0,num); } }
+            continue; }
           let rowTotal=0, rowDays=0;
           for(let i=0;i<dateCols.length;i++){
             const c=dateCols[i]; const v=rows[row][c];
@@ -2759,10 +2779,14 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
         farmRes[name]={dailyKgAll, dailyKgRecent, total, recentTotal, recentDays:recentDs.length, from, to, days:ds.length, rows:ds.length, recentFrom:recentDs[0]||from, daily};
       }
       if(Object.keys(farmRes).length>0){ results[farmId]=farmRes; foundAny=true; }
+      const hd=Object.keys(headDaily).filter(d=>d<=tdParse&&headDaily[d]>0).sort();
+      if(hd.length) heads[farmId]=headDaily[hd[hd.length-1]];
     }
     setHirayamaDebug({sheets:debugSheets, assignment, perSheet:debug});
     if(!foundAny){ setMsg(`「${FARMS.map(f=>f.name).join("」「")}」に対応するシートが見つからないか、日付行が認識できませんでした。読み込めたシート: ${debugSheets.join(" / ")}。手動マッピングを試すか、開発者にこのメッセージを伝えてください。`); setHirayamaResults(null); return; }
     setHirayamaResults(results);
+    setHirayamaHeads(heads);
+    setReflectHeads(()=>{ const m={}; for(const fid in heads) m[fid]=String(heads[fid]); return m; });
     // 直近の餌メニュー変更を自動検出し、基準日に自動セット（未来の使用量=直近メニュー基準に）
     const autoCut=detectMenuChangeDate(results);
     if(autoCut){ setMenuChangeDate(autoCut); setMenuAuto(autoCut); } else { setMenuAuto(""); }
@@ -2788,6 +2812,21 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
     const total=ds.reduce((s,d)=>s+src[d],0);
     return {dailyKg:total/ds.length, removed:false, from:ds[0], to:ds[ds.length-1], days:ds.length, total};
   };
+  // 日誌→餌メニュー反映用: 既存の餌に紐づくものだけ「1日kg÷頭数=1頭あたり」を計算
+  const buildMenuReflect=()=>{
+    const list=[]; if(!hirayamaResults) return list;
+    for(const [fid,feeds] of Object.entries(hirayamaResults)){
+      const head=parseFloat(reflectHeads[fid]); if(!(head>0)) continue;
+      for(const [feedName,info] of Object.entries(feeds)){
+        const t=selectedTargets[`${fid}|${feedName}`];
+        if(typeof t!=="number") continue;
+        const eff=effInfo(info); if(!(eff.dailyKg>0)) continue;
+        list.push({id:t,fid,cat:reflectCat,kg:eff.dailyKg/head,feedName,head,dailyKg:eff.dailyKg});
+      }
+    }
+    return list;
+  };
+  const applyMenuNow=()=>{ const list=buildMenuReflect(); if(!list.length){ setMenuMsg("反映できる餌がありません（頭数の入力と、既存の餌への紐づけを確認してください）。"); return; } onApplyMenu(list.map(({id,fid,cat,kg})=>({id,fid,cat,kg}))); setMenuMsg(`餌メニュー（${CATS.find(c=>c.key===reflectCat)?.label} 1頭あたり量）に ${list.length}件 反映しました。`); };
 
   const applyAll=()=>{
     if(!hirayamaResults) return;
@@ -2988,6 +3027,28 @@ function ExcelImport({items,onApply,onClear,onAddItem}){
           </div>);
         })}
       </div>))}
+
+      {/* 餌メニュー（1頭あたり量）への反映 */}
+      {(()=>{ const mr=buildMenuReflect(); return (
+        <div style={S.menuReflectBox}>
+          <div style={{fontWeight:800,fontSize:14,marginBottom:2}}>🐄 餌メニュー（1頭あたり量）へ反映</div>
+          <div style={S.miniNote}>日誌の頭数で割って「1頭あたり量」を出し、餌メニューに反映します（1日使用量・残り日数の計算は今まで通りExcel実績のまま）。日誌は群の内訳が無いため、下で選んだ区分にまとめて入ります。既存の餌に紐づくものだけが対象です。</div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",margin:"8px 0"}}>
+            <span style={{fontSize:12.5,fontWeight:700}}>反映先の区分</span>
+            <div style={S.modeRow}>{CATS.map(c=>(<button key={c.key} style={{...S.modeTab,...(reflectCat===c.key?S.modeActive:{})}} onClick={()=>setReflectCat(c.key)}>{c.label}</button>))}</div>
+          </div>
+          {Object.keys(hirayamaResults).map(fid=>(<div key={fid} style={{display:"flex",gap:8,alignItems:"center",margin:"4px 0",flexWrap:"wrap"}}>
+            <span style={{fontSize:13,fontWeight:700,color:"var(--accent)",minWidth:70}}>{FARMS.find(f=>f.id===fid)?.name||fid}</span>
+            <label style={{fontSize:12.5,color:"var(--muted)"}}>頭数 <input style={{...S.input,width:90,padding:"6px 8px"}} type="number" inputMode="numeric" value={reflectHeads[fid]||""} onChange={e=>setReflectHeads(s=>({...s,[fid]:e.target.value}))}/></label>
+            <span style={{fontSize:11.5,color:"var(--muted)"}}>{hirayamaHeads[fid]!=null?`日誌の頭数: ${fmt(hirayamaHeads[fid])}`:"日誌に頭数が見つからないので入力してください"}</span>
+          </div>))}
+          {mr.length>0?(<div style={{marginTop:6}}>
+            {mr.map((r,i)=>(<div key={i} style={S.menuReflectRow}><span>{r.feedName}<span style={{color:"var(--muted)"}}>（{FARMS.find(f=>f.id===r.fid)?.name}）</span></span><span>1日{fmt(r.dailyKg)}kg ÷ {fmt(r.head)}頭 = 1頭 <b>{fmt(Math.round(r.kg*100)/100)}kg</b></span></div>))}
+          </div>):<div style={{...S.miniNote,marginTop:6}}>頭数を入力し、上の一覧で餌を既存の餌に紐づけると、ここに1頭あたり量が出ます。</div>}
+          <button style={{...S.smallBtn,marginTop:8,opacity:mr.length?1:0.5}} disabled={!mr.length} onClick={applyMenuNow}>この内容で餌メニューに反映</button>
+          {menuMsg&&<div style={{...S.okBox,marginTop:8}}>{menuMsg}</div>}
+        </div>); })()}
+
       <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
         <button style={{...S.primaryBtn,flex:1}} onClick={applyAll}>すべて反映する</button>
         <button style={{...S.cancelBtn,flex:"0 0 auto"}} onClick={cancelImport}>キャンセル</button>
@@ -3446,6 +3507,9 @@ const S={
   nameLine:{fontSize:13,color:"var(--muted)",display:"flex",flexDirection:"column",gap:8,marginBottom:12},
   uploadBtn:{display:"inline-block",background:"var(--accent)",color:"#fff",borderRadius:11,padding:"11px 18px",fontSize:14,fontWeight:700,cursor:"pointer"},
   importBox:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:12,padding:13,marginTop:12},
+  okBox:{background:"rgba(95,125,60,.1)",border:"1px solid rgba(95,125,60,.3)",borderRadius:9,padding:"8px 10px",fontSize:12.5,color:"var(--accent)",fontWeight:600},
+  menuReflectBox:{background:"rgba(95,125,60,.05)",border:"1px solid rgba(95,125,60,.25)",borderRadius:11,padding:"12px",marginTop:14},
+  menuReflectRow:{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,fontSize:12.5,padding:"3px 0",borderTop:"1px dashed var(--line)"},
   previewWrap:{overflowX:"auto",border:"1px solid var(--line)",borderRadius:8,marginBottom:8},
   previewTable:{borderCollapse:"collapse",fontSize:11.5,width:"100%"},
   previewCell:{border:"1px solid var(--line)",padding:"4px 7px",whiteSpace:"nowrap",color:"var(--ink)"},

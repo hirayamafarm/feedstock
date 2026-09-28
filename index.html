@@ -330,6 +330,18 @@ function menuPerHeadOf(item,fid){
   return {milk:+v.milk||0,dry:+v.dry||0,heifer:+v.heifer||0};
 }
 function hasMenuPerHead(item,fid){ const p=menuPerHeadOf(item,fid); return p.milk>0||p.dry>0||p.heifer>0; }
+// menuPerHead マップを比較用の正規化文字列に（変更検知用）
+function canonMenu(mph){ const out={}; for(const fid of Object.keys(mph||{}).sort()){ const v=mph[fid]; const o=(typeof v==="number")?{milk:v,dry:0,heifer:0}:{milk:+v?.milk||0,dry:+v?.dry||0,heifer:+v?.heifer||0}; if(o.milk||o.dry||o.heifer) out[fid]=o; } return JSON.stringify(out); }
+// 指定日時点の1頭量（asOf=null で現在）。menuLog（変更履歴）から復元。
+function menuPerHeadAsOf(item,fid,asOf){
+  if(!asOf) return menuPerHeadOf(item,fid);
+  const log=(item.menuLog||[]).filter(e=>e.date<=asOf);
+  if(!log.length) return (item.menuLog&&item.menuLog.length)?{milk:0,dry:0,heifer:0}:menuPerHeadOf(item,fid);
+  const v=log[log.length-1].perHead?.[fid];
+  if(v==null) return {milk:0,dry:0,heifer:0};
+  if(typeof v==="number") return {milk:v,dry:0,heifer:0};
+  return {milk:+v.milk||0,dry:+v.dry||0,heifer:+v.heifer||0};
+}
 // 農場fidの頭数 {milk,dry,heifer}
 function headCountsOf(headCounts,fid){ const h=headCounts?.[fid]||{}; return {milk:+h.milk||0,dry:+h.dry||0,heifer:+h.heifer||0}; }
 // 餌メニューから算出する1日使用量(kg) = Σ(1頭量×頭数)。頭数or1頭量が無ければ null。
@@ -854,38 +866,75 @@ function SimulationView({items,headCounts,warningDays}){
         const pBase=proj(startStock,baseDay,confirmed);
         const pAdj=proj(startStock,adjDay,[...confirmed,...tentA]);
         const noBase=baseDay<=0, noAdj=adjDay<=0;
+        const changed=(pctN!==0||perHeadAdd!==0||tentA.length>0);
         // 表示レンジ
-        const maxDay=Math.min(HORIZON,Math.max(60,(pBase.daysLeft||120),(pAdj.daysLeft||120))+20);
-        const maxStock=Math.max(startStock, ...pBase.series.map(p=>p.stock), ...pAdj.series.map(p=>p.stock), 1);
+        const maxDay=Math.min(HORIZON,Math.max(45,(pBase.daysLeft||90),(pAdj.daysLeft||90))+15);
+        const maxStock=Math.max(startStock, ...pBase.series.map(p=>p.stock), ...pAdj.series.map(p=>p.stock), 1)*1.08;
         const stockAt=(series,d)=>{ const pt=series.find(p=>p.d===d); if(pt) return pt.stock; const last=series[series.length-1]; return last&&d>last.d?last.stock:0; };
-        const W=320,H=110,PAD=4;
-        const pts=(series)=>{ let s=""; for(let d=0;d<=maxDay;d+=Math.max(1,Math.round(maxDay/60))){ const x=PAD+(W-2*PAD)*d/maxDay; const y=PAD+(H-2*PAD)*(1-stockAt(series,d)/maxStock); s+=`${x.toFixed(1)},${y.toFixed(1)} `; } return s.trim(); };
-        const warnDay=warningDays||0;
+        // チャート座標（軸ラベル用に余白）
+        const VW=340,VH=196,mL=40,mR=14,mT=10,mB=34;
+        const px0=mL,px1=VW-mR,py0=mT,py1=VH-mB;
+        const xFor=(d)=>px0+(px1-px0)*(maxDay>0?d/maxDay:0);
+        const yFor=(s)=>py1-(py1-py0)*(maxStock>0?Math.min(1,s/maxStock):0);
+        const step=Math.max(1,Math.round(maxDay/100));
+        const linePts=(series)=>{ let s=""; for(let d=0;d<=maxDay;d+=step) s+=`${xFor(d).toFixed(1)},${yFor(stockAt(series,d)).toFixed(1)} `; return s.trim(); };
+        const areaPts=(series)=>`${xFor(0).toFixed(1)},${py1.toFixed(1)} ${linePts(series)} ${xFor(maxDay).toFixed(1)},${py1.toFixed(1)}`;
+        const warnDay=warningDays||0, warnStock=baseDay>0?baseDay*warnDay:0;
+        const xtick=maxDay<=45?7:maxDay<=90?14:maxDay<=180?30:60;
+        const xticks=[]; for(let d=0;d<=maxDay;d+=xtick) xticks.push(d);
+        const yticks=[0,maxStock/2/1.08,maxStock/1.08];
+        const arr=[...confirmed.map(a=>({...a,t:"確定"})),...tentA.map(a=>({...a,t:"仮"}))].filter(a=>a.date>=td).map(a=>({...a,d:Math.round((new Date(a.date+"T00:00:00")-new Date(td+"T00:00:00"))/86400000)})).filter(a=>a.d>=0&&a.d<=maxDay);
         return (<div key={sc.key} style={S.simScope}>
           <div style={S.simScopeHead}>{sc.label}</div>
           <div style={S.simNums}>
             <span>今の在庫 <b>{fmt(startStock)}{u}</b></span>
-            <span>1日 現状<b>{fmt(baseDay)}</b>{u}{(pctN!==0||perHeadAdd!==0)&&<> → 変更後<b style={{color:"var(--accent)"}}>{fmt(adjDay)}</b>{u}</>}</span>
+            <span>1日使用 現状<b>{fmt(baseDay)}</b>{u}{changed&&<> → 変更後<b style={{color:"var(--accent)"}}>{fmt(adjDay)}</b>{u}</>}</span>
           </div>
           {basis==="menu"&&menuDay<=0&&<div style={S.simWarn}>メニューの1頭量または頭数が未設定です（設定・餌編集で登録してください）。</div>}
           <div style={S.simCompare}>
             <div style={S.simCompareCol}>
               <div style={S.simColLabel}>このまま（現状）</div>
               <div style={S.simColBig}>{noBase?"—":pBase.runout?`${fmtD(pBase.runout)}`:"1年以上"}</div>
-              <div style={S.simColSub}>{noBase?"使用量0":pBase.daysLeft!=null?`残り約${pBase.daysLeft}日`:"在庫は当面もちます"}</div>
+              <div style={S.simColSub}>{noBase?"使用量0":pBase.daysLeft!=null?`在庫が尽きる（残り約${pBase.daysLeft}日）`:"在庫は当面もちます"}</div>
             </div>
-            <div style={{...S.simCompareCol,borderLeft:"1px solid var(--line)"}}>
-              <div style={{...S.simColLabel,color:"var(--accent)"}}>変更後</div>
+            <div style={{...S.simCompareCol,borderLeft:"1px solid var(--line)",background:changed?"rgba(95,125,60,.05)":"transparent"}}>
+              <div style={{...S.simColLabel,color:"var(--accent)"}}>変更後{!changed&&"（未変更）"}</div>
               <div style={{...S.simColBig,color:"var(--accent)"}}>{noAdj?"—":pAdj.runout?`${fmtD(pAdj.runout)}`:"1年以上"}</div>
-              <div style={S.simColSub}>{noAdj?"使用量0":pAdj.daysLeft!=null?`残り約${pAdj.daysLeft}日`:"在庫は当面もちます"}</div>
+              <div style={S.simColSub}>{noAdj?"使用量0":pAdj.daysLeft!=null?`在庫が尽きる（残り約${pAdj.daysLeft}日）`:"在庫は当面もちます"}</div>
             </div>
           </div>
-          <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:110,marginTop:8,background:"var(--card2,rgba(0,0,0,.02))",borderRadius:8}}>
-            {warnDay>0&&maxStock>0&&(()=>{ const y=PAD+(H-2*PAD)*(1-(baseDay*warnDay)/maxStock); return baseDay*warnDay<maxStock?<line x1={PAD} y1={y} x2={W-PAD} y2={y} stroke="var(--bad)" strokeWidth="0.7" strokeDasharray="3 3" opacity="0.5"/>:null; })()}
-            <polyline points={pts(pBase.series)} fill="none" stroke="var(--muted)" strokeWidth="1.6"/>
-            <polyline points={pts(pAdj.series)} fill="none" stroke="var(--accent)" strokeWidth="1.8"/>
+          <svg viewBox={`0 0 ${VW} ${VH}`} style={{width:"100%",height:200,marginTop:8,background:"var(--card)",border:"1px solid var(--line)",borderRadius:8}}>
+            {/* Y軸グリッド＋ラベル */}
+            {yticks.map((s,i)=>{ const y=yFor(s); return (<g key={"y"+i}>
+              <line x1={px0} y1={y} x2={px1} y2={y} stroke="var(--line)" strokeWidth="0.6"/>
+              <text x={px0-4} y={y+3} textAnchor="end" fontSize="8.5" fill="var(--muted)">{fmt(s)}</text>
+            </g>); })}
+            <text x={4} y={py0+2} fontSize="8" fill="var(--muted)">{u}</text>
+            {/* X軸ラベル（日付） */}
+            {xticks.map((d,i)=>{ const x=xFor(d); return (<g key={"x"+i}>
+              <line x1={x} y1={py1} x2={x} y2={py1+3} stroke="var(--muted)" strokeWidth="0.6"/>
+              <text x={x} y={py1+13} textAnchor="middle" fontSize="8" fill="var(--muted)">{d===0?"今日":addDays(td,d).slice(5).replace("-","/")}</text>
+            </g>); })}
+            {/* 警告ライン */}
+            {warnDay>0&&warnStock>0&&warnStock<maxStock&&(()=>{ const y=yFor(warnStock); return (<g><line x1={px0} y1={y} x2={px1} y2={y} stroke="var(--bad)" strokeWidth="0.8" strokeDasharray="3 3" opacity="0.7"/><text x={px1} y={y-2} textAnchor="end" fontSize="7.5" fill="var(--bad)">警告{warnDay}日</text></g>); })()}
+            {/* エリア＋ライン（現状=グレー / 変更後=緑） */}
+            <polyline points={areaPts(pBase.series)} fill="var(--muted)" opacity="0.10" stroke="none"/>
+            {changed&&<polyline points={areaPts(pAdj.series)} fill="var(--accent)" opacity="0.12" stroke="none"/>}
+            <polyline points={linePts(pBase.series)} fill="none" stroke="var(--muted)" strokeWidth="1.8"/>
+            {changed&&<polyline points={linePts(pAdj.series)} fill="none" stroke="var(--accent)" strokeWidth="2"/>}
+            {/* 入荷マーカー（下端の三角） */}
+            {arr.map((a,i)=>{ const x=xFor(a.d); const c=a.t==="仮"?"#e08a3c":"var(--muted)"; return (<g key={"a"+i}><polygon points={`${x-3},${py1+0} ${x+3},${py1+0} ${x},${py1-5}`} fill={c}/></g>); })}
+            {/* 尽きる日マーカー */}
+            {!noBase&&pBase.runout&&pBase.daysLeft<=maxDay&&(<g><circle cx={xFor(pBase.daysLeft)} cy={yFor(0)} r="2.6" fill="var(--muted)"/></g>)}
+            {changed&&!noAdj&&pAdj.runout&&pAdj.daysLeft<=maxDay&&(<g><circle cx={xFor(pAdj.daysLeft)} cy={yFor(0)} r="2.6" fill="var(--accent)"/></g>)}
           </svg>
-          <div style={S.simLegend}><span style={{color:"var(--muted)"}}>― 現状</span><span style={{color:"var(--accent)",marginLeft:10}}>― 変更後</span>{warnDay>0&&<span style={{color:"var(--bad)",marginLeft:10}}>┈ 警告({warnDay}日)ライン</span>}</div>
+          <div style={S.simLegend}>
+            <span style={{color:"var(--muted)"}}>■ 現状</span>
+            {changed&&<span style={{color:"var(--accent)",marginLeft:10}}>■ 変更後</span>}
+            <span style={{marginLeft:10}}>▲入荷</span>
+            <span style={{color:"#e08a3c",marginLeft:6}}>▲仮入荷</span>
+            {warnDay>0&&<span style={{color:"var(--bad)",marginLeft:10}}>┈警告ライン</span>}
+          </div>
           {(confirmed.length>0||tentA.length>0)&&(<div style={S.simArrivals}>
             <div style={{fontWeight:700,fontSize:12.5,marginBottom:3}}>入荷予定</div>
             {[...confirmed.map(a=>({...a,t:"確定"})),...tentA.map(a=>({...a,t:"仮"}))].sort((a,b)=>a.date.localeCompare(b.date)).map((a,i)=>(
@@ -895,6 +944,54 @@ function SimulationView({items,headCounts,warningDays}){
         </div>);
       })}
     </>)}
+  </div>);
+}
+
+// ── 餌メニュー（現在・過去）：農場×牛カテゴリの1頭あたり給与メニュー ──────────
+function MenuView({items,onSelect}){
+  const sorted=[...items].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
+  const dates=new Set(); for(const it of items) for(const e of (it.menuLog||[])) dates.add(e.date);
+  const dateList=[...dates].sort((a,b)=>b.localeCompare(a));
+  const [asOf,setAsOf]=useState(null);
+  const normOne=(v)=>v==null?{milk:0,dry:0,heifer:0}:(typeof v==="number"?{milk:v,dry:0,heifer:0}:{milk:+v.milk||0,dry:+v.dry||0,heifer:+v.heifer||0});
+  // 変更履歴（新しい順）: 各餌の menuLog を前回と差分表示
+  const hist=[];
+  for(const it of items){ const log=it.menuLog||[]; for(let i=0;i<log.length;i++){ const cur=log[i].perHead||{}, prev=i>0?log[i-1].perHead||{}:null; const changes=[];
+    for(const fid of (it.farms||[])){ const cn=normOne(cur[fid]), pn=prev?normOne(prev[fid]):{milk:0,dry:0,heifer:0}; for(const c of CATS){ if(cn[c.key]!==pn[c.key]) changes.push(`${FARMS.find(f=>f.id===fid)?.name||fid}・${c.label} ${prev?fmt(pn[c.key])+"→":""}${fmt(cn[c.key])}kg`); } }
+    if(changes.length) hist.push({date:log[i].date,name:it.name,changes}); } }
+  hist.sort((a,b)=>b.date.localeCompare(a.date));
+  return (<div style={S.fade}>
+    <h2 style={S.h2}>餌メニュー</h2>
+    <div style={S.lead}>農場ごと・牛（搾乳／乾乳／未経産）ごとに「1頭あたり何kgの給与メニューか」を一覧します。餌を編集して1頭量を変えると変更履歴に記録され、過去のメニューも見られます。</div>
+    {dateList.length>0&&(<label style={S.field}><span style={S.fieldLabel}>表示するメニュー</span>
+      <select style={S.input} value={asOf||""} onChange={e=>setAsOf(e.target.value||null)}>
+        <option value="">現在</option>
+        {dateList.map(d=><option key={d} value={d}>{d.replace(/-/g,"/")} 時点</option>)}
+      </select>
+    </label>)}
+    {asOf&&<div style={S.menuAsOf}>📅 {asOf.replace(/-/g,"/")} 時点のメニューを表示中（過去）</div>}
+    {FARMS.map(f=>(<div key={f.id} style={S.menuFarmCard}>
+      <div style={S.menuFarmHead}>{f.name}</div>
+      {CATS.map(c=>{
+        const rows=sorted.filter(it=>(it.farms||[]).includes(f.id)).map(it=>({it,kg:menuPerHeadAsOf(it,f.id,asOf)[c.key]})).filter(r=>r.kg>0);
+        const total=rows.reduce((s,r)=>s+r.kg,0);
+        return (<div key={c.key} style={S.menuCatBlock}>
+          <div style={S.menuCatHead}><span style={{fontWeight:700}}>{c.label}</span>{rows.length>0&&<span style={S.menuCatTotal}>1頭 計 {fmt(total)}kg/日</span>}</div>
+          {rows.length===0?<div style={S.menuEmpty}>メニュー未設定</div>:
+            rows.map(r=>(<div key={r.it.id} style={S.menuRow}><button style={S.menuFeedBtn} onClick={()=>onSelect&&onSelect(r.it.id)}>{r.it.name}<span style={{color:"var(--muted)",fontSize:11}}> ›</span></button><span style={S.menuKg}>{fmt(r.kg)}kg</span></div>))}
+        </div>);
+      })}
+    </div>))}
+    {hist.length>0&&(<details style={{marginTop:16}}>
+      <summary style={S.menuHistSummary}>変更履歴（{hist.length}件）</summary>
+      <div style={{marginTop:8}}>
+        {hist.map((h,i)=>(<div key={i} style={S.menuHistRow}>
+          <div style={S.menuHistHead}><b>{h.name}</b><span style={{color:"var(--muted)",fontSize:12}}>{h.date.replace(/-/g,"/")}</span></div>
+          <div style={S.menuHistChanges}>{h.changes.map((c,j)=><span key={j} style={S.menuHistChip}>{c}</span>)}</div>
+        </div>))}
+      </div>
+    </details>)}
+    {sorted.length===0&&<div style={S.empty}>餌が登録されていません。</div>}
   </div>);
 }
 
@@ -1032,7 +1129,17 @@ function App(){
     return s; },`発注予定編集: ${nameOf(id)}`);
   const addItem=(it)=>update(s=>{ s.items.push({...it,id:s.nextId,counts:{},orders:[]}); s.nextId++; return s; },`餌を追加: ${it.name}`);
   const editItem=(id,patch)=>update(s=>{ const it=s.items.find(i=>i.id===id); if(!it) return s;
-    it.name=patch.name; it.unitType=patch.unitType; it.stockMode=patch.stockMode; it.reserveMonths=patch.reserveMonths; it.farms=patch.farms; it.units=patch.units; it.excludeFromPlan=!!patch.excludeFromPlan; it.menuPerHead=patch.menuPerHead||{}; return s;
+    const newMPH=patch.menuPerHead||{};
+    // 餌メニュー（1頭量）が変わったら変更履歴に記録（過去メニュー閲覧用）
+    if(canonMenu(it.menuPerHead)!==canonMenu(newMPH)){
+      it.menuLog=it.menuLog||[];
+      const d=today();
+      it.menuLog=it.menuLog.filter(e=>e.date!==d); // 同日の再編集は最後だけ残す
+      it.menuLog.push({date:d,perHead:JSON.parse(JSON.stringify(newMPH))});
+      it.menuLog.sort((a,b)=>a.date.localeCompare(b.date));
+      if(it.menuLog.length>60) it.menuLog=it.menuLog.slice(-60);
+    }
+    it.name=patch.name; it.unitType=patch.unitType; it.stockMode=patch.stockMode; it.reserveMonths=patch.reserveMonths; it.farms=patch.farms; it.units=patch.units; it.excludeFromPlan=!!patch.excludeFromPlan; it.menuPerHead=newMPH; return s;
   },`餌を編集: ${patch.name}`);
   const delItem=(id)=>update(s=>{ s.items=s.items.filter(i=>i.id!==id); return s; },`餌を削除: ${nameOf(id)}`);
   const applyFeedDaily=(id,fid,info)=>update(s=>{ const it=s.items.find(i=>i.id===id); it.feedDaily=it.feedDaily||{}; it.feedDaily[fid]=info; return s; },
@@ -1096,13 +1203,14 @@ function App(){
         })()}
       </header>
       <main style={S.main}>
-        {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="sim"||view==="diff"||view==="data"||view==="settings") && (<>
+        {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="sim"||view==="menu"||view==="diff"||view==="data"||view==="settings") && (<>
           {view==="incoming"&&<IncomingCalendarView items={state.items} colors={state.incomingColors||{}} onSetColor={setIncomingColor} onEditOrder={editOrder} onDelOrder={delOrder} onToggleReceived={toggleReceived}/>}
           {view==="order"&&<OrderView items={state.items} onSelect={id=>{setSelId(id);setPrevView("order");setView("detail");}} onAddOrder={addOrder} onToggleReceived={toggleReceived} onDelOrder={delOrder} onEditOrder={editOrder} warningDays={warningDays} role={role}/>}
           {view==="inventory"&&<InventoryView items={state.items} onSave={saveCount} onAdd={()=>setView("add")} onSelect={id=>{setSelId(id);setPrevView("inventory");setView("detail");}} role={role}/>}
           {view==="calendar"&&<CalendarView items={state.items} onAddOrder={addOrder} warningDays={warningDays}/>}
           {view==="usage"&&<UsageView items={state.items} headCounts={state.headCounts||{}} onSelect={id=>{setSelId(id);setPrevView("usage");setView("detail");}}/>}
           {view==="sim"&&<SimulationView items={state.items} headCounts={state.headCounts||{}} warningDays={warningDays}/>}
+          {view==="menu"&&<MenuView items={state.items} onSelect={id=>{setSelId(id);setPrevView("menu");setView("detail");}}/>}
           {view==="diff"&&<DiffView items={state.items} records={state.discrepancies||[]}/>}
           {view==="data"&&<DataView items={state.items} log={log} me={me} onSetMe={setMe} onApply={applyFeedDaily} onClear={clearFeedDaily} onSetExtra={setExtra} onAddItem={addItem} role={role}/>}
           {view==="settings"&&<SettingsView farms={FARMS} onRenameFarm={renameFarm} state={state} onRestore={restoreState} warningDays={warningDays} onSetWarningDays={setWarningDays} role={role} accessCodes={state.accessCodes||{}} onSetAccessCodes={setAccessCodes} headCounts={state.headCounts||{}} onSetHeadCount={setHeadCount}/>}
@@ -1114,20 +1222,20 @@ function App(){
         {view==="edit"&&sel&&<EditView item={sel} onSave={(patch)=>{editItem(sel.id,patch);setView("detail");}} onCancel={()=>setView("detail")}/>}
         {view==="add"&&<AddView onSave={it=>{addItem(it);setView("inventory");}} onCancel={()=>setView("inventory")}/>}
       </main>
-      {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="sim"||view==="diff"||view==="data"||view==="settings")&&(
+      {(view==="incoming"||view==="order"||view==="inventory"||view==="calendar"||view==="usage"||view==="sim"||view==="menu"||view==="diff"||view==="data"||view==="settings")&&(
         <nav style={S.bottomNav} className="no-print">
           {[{id:"incoming",icon:"incoming",label:"入荷"},{id:"order",icon:"order",label:"発注"},{id:"inventory",icon:"inventory",label:"棚卸し"},{id:"calendar",icon:"calendar",label:"カレンダー"}].map(t=>(
             <button key={t.id} style={{...S.bnItem,...(view===t.id?S.bnActive:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
               <span style={S.bnIcon}><NavIcon name={t.icon}/></span><span style={S.bnLabel}>{t.label}</span>
             </button>
           ))}
-          <button style={{...S.bnItem,...((["usage","sim","diff","data","settings"].includes(view)||moreOpen)?S.bnActive:{})}} onClick={()=>setMoreOpen(o=>!o)}>
+          <button style={{...S.bnItem,...((["usage","sim","menu","diff","data","settings"].includes(view)||moreOpen)?S.bnActive:{})}} onClick={()=>setMoreOpen(o=>!o)}>
             <span style={S.bnIcon}><NavIcon name="more"/></span><span style={S.bnLabel}>その他</span>
           </button>
           {moreOpen&&(<>
             <div style={S.menuOverlay} onClick={()=>setMoreOpen(false)}/>
             <div style={S.bnMore}>
-              {[{id:"usage",icon:"usage",label:"使用量・在庫"},{id:"sim",icon:"diff",label:"在庫シミュレーション"},{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
+              {[{id:"usage",icon:"usage",label:"使用量・在庫"},{id:"menu",icon:"inventory",label:"餌メニュー"},{id:"sim",icon:"diff",label:"在庫シミュレーション"},{id:"diff",icon:"diff",label:"差分"},{id:"data",icon:"data",label:"取込/履歴"},{id:"settings",icon:"settings",label:"設定"}].map(t=>(
                 <button key={t.id} style={{...S.bnMoreItem,...(view===t.id?{color:"var(--accent)"}:{})}} onClick={()=>{setView(t.id);setMoreOpen(false);}}>
                   <NavIcon name={t.icon} size={20}/> {t.label}
                 </button>
@@ -3293,6 +3401,21 @@ const S={
   simLegend:{fontSize:11,marginTop:2},
   simArrivals:{marginTop:8,borderTop:"1px solid var(--line)",paddingTop:6},
   simArrRow:{display:"flex",justifyContent:"space-between",fontSize:12.5,padding:"2px 0"},
+  menuAsOf:{fontSize:12.5,color:"var(--accent)",background:"rgba(95,125,60,.08)",borderRadius:8,padding:"6px 10px",marginBottom:10,fontWeight:600},
+  menuFarmCard:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:11,padding:"10px 12px",marginBottom:12},
+  menuFarmHead:{fontSize:15,fontWeight:800,color:"var(--accent)",marginBottom:6,paddingBottom:4,borderBottom:"1px solid var(--line)"},
+  menuCatBlock:{padding:"6px 0",borderBottom:"1px dashed var(--line)"},
+  menuCatHead:{display:"flex",justifyContent:"space-between",alignItems:"baseline",fontSize:13.5,marginBottom:3},
+  menuCatTotal:{fontSize:12,color:"var(--muted)",fontWeight:700},
+  menuRow:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"3px 0 3px 10px"},
+  menuFeedBtn:{background:"none",border:"none",padding:0,fontSize:13.5,color:"var(--ink)",cursor:"pointer",textAlign:"left"},
+  menuKg:{fontSize:13.5,fontWeight:700},
+  menuEmpty:{fontSize:12,color:"var(--muted)",padding:"2px 0 2px 10px"},
+  menuHistSummary:{fontSize:13.5,fontWeight:700,color:"var(--accent)",cursor:"pointer",padding:"6px 0"},
+  menuHistRow:{background:"var(--card)",border:"1px solid var(--line)",borderRadius:9,padding:"8px 10px",marginBottom:8},
+  menuHistHead:{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4},
+  menuHistChanges:{display:"flex",flexWrap:"wrap",gap:5},
+  menuHistChip:{fontSize:11.5,background:"rgba(120,110,80,.1)",borderRadius:6,padding:"2px 7px",color:"var(--ink)"},
   usageSrc:{fontSize:10,fontWeight:700,color:"var(--muted)",background:"rgba(120,110,80,.1)",borderRadius:6,padding:"1px 6px",marginLeft:6,verticalAlign:"middle"},
   itemFilterRow:{display:"flex",flexWrap:"wrap",gap:6},
   itemFilterBtn:{padding:"5px 11px",border:"1px solid var(--line)",background:"#fff",borderRadius:14,fontSize:12.5,fontWeight:700,color:"var(--muted)"},
